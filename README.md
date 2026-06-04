@@ -1,80 +1,34 @@
-# Convex Component Template
-
-This is a Convex component, ready to be published on npm.
-
-To create your own component:
-
-1. Write code in src/component for your component. Component-specific tables,
-   queries, mutations, and actions go here.
-1. Write code in src/client for the Class that interfaces with the component.
-   This is the bridge your users will access to get information into and out of
-   your component
-1. Write example usage in example/convex/example.ts.
-1. Delete the text in this readme until `---` and flesh out the README.
-1. Publish to npm with `npm run alpha` or `npm run release`.
-
-To develop your component run a dev process in the example project:
-
-```sh
-npm i
-npm run dev
-```
-
-`npm run dev` will start a file watcher to re-build the component, as well as
-the example project backend, which installs and uses the component. Run
-`npm run dev:frontend` to interact with it through a Vite app.
-
-Modify the schema and index files in src/component/ to define your component.
-
-Write a client for using this component in src/client/index.ts.
-
-If you won't be adding frontend code (e.g. React components) to this component
-you can delete "./react" references in package.json and "src/react/" directory.
-If you will be adding frontend code, add a peer dependency on React in
-package.json.
-
-### Component Directory structure
-
-```
-.
-├── README.md           documentation of your component
-├── package.json        component name, version number, other metadata
-├── package-lock.json   Components are like libraries, package-lock.json
-│                       is .gitignored and ignored by consumers.
-├── src
-│   ├── component/
-│   │   ├── _generated/ Files here are generated for the component.
-│   │   ├── convex.config.ts  Name your component here and use other components
-│   │   ├── lib.ts    Define functions here and in new files in this directory
-│   │   └── schema.ts   schema specific to this component
-│   ├── client/
-│   │   └── index.ts    Code that needs to run in the app that uses the
-│   │                   component. Generally the app interacts directly with
-│   │                   the component's exposed API (src/component/*).
-│   └── react/          Code intended to be used on the frontend goes here.
-│       │               Your are free to delete this if this component
-│       │               does not provide code.
-│       └── index.ts
-├── example/            example Convex app that uses this component
-│   └── convex/
-│       ├── _generated/       Files here are generated for the example app.
-│       ├── convex.config.ts  Imports and uses this component
-│       ├── myFunctions.ts    Functions that use the component
-│       └── schema.ts         Example app schema
-└── dist/               Publishing artifacts will be created here.
-```
-
----
-
 # Convex Worker
 
-[![npm version](https://badge.fury.io/js/@example%2Fworker.svg)](https://badge.fury.io/js/@example%2Fworker)
+[![npm version](https://badge.fury.io/js/@convex-dev%2Fworker.svg)](https://badge.fury.io/js/@convex-dev/worker)
 
 <!-- START: Include on https://convex.dev/components -->
 
-- [ ] What is some compelling syntax as a hook?
-- [ ] Why should you use this component?
-- [ ] Links to docs / other resources?
+Run a single background "main loop" over work you insert into your own table —
+without scheduling, debouncing, or recovery boilerplate.
+
+You bring two functions:
+
+- a **work query** that returns the next batch of work (or `null` when the
+  queue is empty), and
+- a **worker mutation** that processes that batch.
+
+After inserting work, call `worker.ensureRunning(...)`. The component takes care
+of the rest:
+
+- runs exactly one loop at a time, debouncing bursts so they batch together,
+- keeps the loop "warm" with a short polling cooldown so a trickle of new work
+  is picked up promptly,
+- uses snapshot reads while draining so concurrent inserts don't cause OCC
+  retries, and confirms with a real read before going idle so nothing is lost,
+- goes idle when the queue drains, and restarts automatically the next time you
+  enqueue,
+- monitors the loop and **restarts it if it ever dies** (e.g. an unexpected
+  error), logging the failure so you can alert on it.
+
+This is the pattern behind components like
+[Workpool](https://github.com/get-convex/workpool) — extracted so you can build
+your own "process a queue" components on top of it.
 
 Found a bug? Feature request?
 [File it here](https://github.com/get-convex/worker/issues).
@@ -97,50 +51,149 @@ export default app;
 
 ## Usage
 
-```ts
-import { components } from "./_generated/api";
+Insert work into your own table, then call `ensureRunning`. Provide a query that
+returns the next batch (or `null`) and a mutation that processes it. The query's
+return type must match the mutation's args.
 
-export const addComment = mutation({
-  args: { text: v.string(), targetId: v.string() },
-  handler: async (ctx, args) => {
-    return await ctx.runMutation(components.worker.lib.add, {
-      text: args.text,
-      targetId: args.targetId,
-      userId: await getAuthUserId(ctx),
+```ts
+import { v } from "convex/values";
+import { Worker } from "@convex-dev/worker";
+import { components, internal } from "./_generated/api";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+} from "./_generated/server";
+
+const worker = new Worker(components.worker);
+
+const BATCH_SIZE = 10;
+
+// Insert work, then make sure the loop is running.
+export const addEvent = mutation({
+  args: { value: v.number() },
+  handler: async (ctx, { value }) => {
+    await ctx.db.insert("events", { value });
+    await worker.ensureRunning(ctx, {
+      workQuery: internal.example.getBatch,
+      workerMutation: internal.example.processBatch,
+      queryArgs: {},
     });
+  },
+});
+
+// Return the next batch of work, or null when there's nothing to do.
+export const getBatch = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const events = await ctx.db.query("events").take(BATCH_SIZE);
+    if (events.length === 0) return null;
+    return {
+      ids: events.map((e) => e._id),
+      values: events.map((e) => e.value),
+    };
+  },
+});
+
+// Process one batch. The worker owns cleanup — delete what you process!
+export const processBatch = internalMutation({
+  args: { ids: v.array(v.id("events")), values: v.array(v.number()) },
+  handler: async (ctx, { ids, values }) => {
+    // ... do the work (sum, call an API, schedule downstream jobs, etc.) ...
+    for (const id of ids) {
+      await ctx.db.delete("events", id);
+    }
+    // Full batch? There's probably more — run again immediately.
+    if (ids.length === BATCH_SIZE) {
+      return { runAfter: 0 };
+    }
   },
 });
 ```
 
-See more example usage in [example.ts](./example/convex/example.ts).
+The component **does not clean up your work for you** — your worker mutation is
+responsible for deleting (or marking complete / advancing a cursor past) the
+rows it processed, otherwise the next query will return them again.
 
-### HTTP Routes
+### Steering the loop from your worker mutation
 
-You can register HTTP routes for the component to expose HTTP endpoints:
+Your worker mutation may return a `WorkerResult` to influence the loop:
 
 ```ts
-import { httpRouter } from "convex/server";
-import { registerRoutes } from "@convex-dev/worker";
-import { components } from "./_generated/api";
-
-const http = httpRouter();
-
-registerRoutes(http, components.worker, {
-  pathPrefix: "/comments",
-});
-
-export default http;
+return {
+  // Delay (ms) before the next iteration. Default: run immediately. Return a
+  // larger value to back off, e.g. when you hit a rate limit.
+  runAfter: 30_000,
+  // New args for the next call to your work query — e.g. to advance a cursor
+  // when you walk a log instead of deleting rows. Persists across iterations.
+  queryArgs: { cursor: nextCursor },
+};
 ```
 
-This will expose a GET endpoint that returns the most recent comment as JSON.
-The endpoint requires a `targetId` query parameter. See
-[http.ts](./example/convex/http.ts) for a complete example.
+### Multiple queues
+
+Pass a `name` to run independent workers off the same component instance:
+
+```ts
+await worker.ensureRunning(ctx, {
+  name: "emails",
+  workQuery: internal.email.getBatch,
+  workerMutation: internal.email.send,
+  queryArgs: {},
+});
+```
+
+### Configuration
+
+Defaults can be set on the `Worker` and overridden per `ensureRunning` call:
+
+```ts
+const worker = new Worker(components.worker, {
+  config: {
+    debounceMs: 100, // wait before the first batch so a burst accumulates
+    pollIntervalMs: 250, // poll cadence while cooling down
+    cooldownMs: 10_000, // keep polling this long after the queue drains
+    errorBackoffMs: 60_000, // wait this long to retry after the mutation throws
+    monitorIntervalMs: 60_000, // how often to check the loop is alive
+    logLevel: "REPORT",
+  },
+});
+```
+
+### Status & stopping
+
+```ts
+// In a query:
+const status = await worker.status(ctx); // { kind: "idle" | "active", ... } | null
+
+// In a mutation:
+await worker.stop(ctx); // halt the loop; it restarts on the next enqueue
+```
+
+See the full working example in [example.ts](./example/convex/example.ts).
 
 <!-- END: Include on https://convex.dev/components -->
 
-Run the example:
+## Development
+
+Run the example app with a file watcher that rebuilds the component:
 
 ```sh
 npm i
 npm run dev
 ```
+
+Run `npm run dev:frontend` to interact with it through a Vite app.
+
+### How it works
+
+| Table         | Written by                       | Read by                  |
+| ------------- | -------------------------------- | ------------------------ |
+| `workers`     | `ensureRunning`/`loop` (on idle) | `ensureRunning`, monitor |
+| `workerState` | `loop` (every iteration)         | `loop`, monitor          |
+
+The high-churn loop state lives in `workerState`, separate from the rarely-
+written `workers` doc. That lets `ensureRunning` — which you call on every
+insert — read `workers` and return without conflicting (OCC) with the
+fast-looping loop. A monotonic `generation` guarantees only one loop chain runs
+at a time: a superseded loop sees a mismatched generation and exits.
