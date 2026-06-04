@@ -1,58 +1,101 @@
-import { action, mutation, query } from "./_generated/server.js";
-import { components } from "./_generated/api.js";
-import { exposeApi } from "@convex-dev/worker";
 import { v } from "convex/values";
-import { Auth } from "convex/server";
+import { Worker } from "@convex-dev/worker";
+import { components, internal } from "./_generated/api.js";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server.js";
 
-// Environment variables aren't available in the component,
-// so we need to pass it in as an argument to the component when necessary.
-const BASE_URL = process.env.BASE_URL ?? "https://pirate.monkeyness.com";
+// One worker instance per component. Use distinct `name`s if you want several
+// independent queues backed by the same component.
+const worker = new Worker(components.worker);
 
-export const addComment = mutation({
-  args: { text: v.string(), targetId: v.string() },
-  handler: async (ctx, args) => {
-    return await ctx.runMutation(components.worker.lib.add, {
-      text: args.text,
-      targetId: args.targetId,
-      userId: await getAuthUserId(ctx),
+const BATCH_SIZE = 10;
+
+/**
+ * Add an event to the queue. After inserting, we tell the worker to make sure
+ * its loop is running — it'll batch up and process everything.
+ */
+export const addEvent = mutation({
+  args: { value: v.number() },
+  handler: async (ctx, { value }) => {
+    await ctx.db.insert("events", { value });
+    await worker.ensureRunning(ctx, {
+      workQuery: internal.example.getBatch,
+      workerMutation: internal.example.processBatch,
+      queryArgs: {},
     });
   },
 });
 
-export const listComments = query({
-  args: { targetId: v.string() },
-  handler: async (ctx, args) => {
-    return await ctx.runQuery(components.worker.lib.list, {
-      targetId: args.targetId,
-    });
+/**
+ * The work query: returns the next batch of events, or `null` when the queue
+ * is empty. Its return type lines up with `processBatch`'s args.
+ */
+export const getBatch = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const events = await ctx.db.query("events").take(BATCH_SIZE);
+    if (events.length === 0) return null;
+    return {
+      ids: events.map((e) => e._id),
+      values: events.map((e) => e.value),
+    };
   },
 });
 
-export const translateComment = action({
-  args: { commentId: v.string() },
-  handler: async (ctx, args) => {
-    return await ctx.runAction(components.worker.lib.translate, {
-      baseUrl: BASE_URL,
-      commentId: args.commentId,
-    });
-  },
-});
-
-// Here is an alternative way to use the component's methods directly by re-exporting
-// the component's API:
-export const { list, add, translate } = exposeApi(components.worker, {
-  auth: async (ctx, operation) => {
-    const userId = await getAuthUserId(ctx);
-    if (userId === null && operation.type !== "read") {
-      throw new Error("Unauthorized");
+/**
+ * The worker mutation: processes a batch. It owns cleanup (deleting the rows
+ * it processed). Returning `{ runAfter: 0 }` on a full batch tells the loop to
+ * keep going immediately rather than waiting.
+ */
+export const processBatch = internalMutation({
+  args: { ids: v.array(v.id("events")), values: v.array(v.number()) },
+  handler: async (ctx, { ids, values }) => {
+    const sum = values.reduce((a, b) => a + b, 0);
+    const totals = await ctx.db
+      .query("totals")
+      .withIndex("key", (q) => q.eq("key", "all"))
+      .unique();
+    if (totals) {
+      await ctx.db.patch("totals", totals._id, {
+        total: totals.total + sum,
+        count: totals.count + ids.length,
+      });
+    } else {
+      await ctx.db.insert("totals", {
+        key: "all",
+        total: sum,
+        count: ids.length,
+      });
     }
-    return userId;
+    for (const id of ids) {
+      await ctx.db.delete("events", id);
+    }
+    // Full batch → there's probably more; run again right away.
+    if (ids.length === BATCH_SIZE) {
+      return { runAfter: 0 };
+    }
   },
-  baseUrl: BASE_URL,
 });
 
-// You can also register HTTP routes for the component. See http.ts for an example.
+export const getTotals = query({
+  args: {},
+  handler: async (ctx) => {
+    const totals = await ctx.db
+      .query("totals")
+      .withIndex("key", (q) => q.eq("key", "all"))
+      .unique();
+    return {
+      total: totals?.total ?? 0,
+      count: totals?.count ?? 0,
+    };
+  },
+});
 
-async function getAuthUserId(ctx: { auth: Auth }) {
-  return (await ctx.auth.getUserIdentity())?.subject ?? "anonymous";
-}
+export const workerStatus = query({
+  args: {},
+  handler: async (ctx) => worker.status(ctx),
+});
