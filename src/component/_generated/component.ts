@@ -24,31 +24,43 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     lib: {
-      add: FunctionReference<
+      ensureRunning: FunctionReference<
         "mutation",
         "internal",
-        { targetId: string; text: string; userId: string },
-        string,
+        {
+          config?: {
+            cooldownMs?: number;
+            debounceMs?: number;
+            errorBackoffMs?: number;
+            logLevel?: "DEBUG" | "TRACE" | "INFO" | "REPORT" | "WARN" | "ERROR";
+            monitorIntervalMs?: number;
+            pollIntervalMs?: number;
+          };
+          name: string;
+          queryArgs?: any;
+          workQuery: string;
+          workerMutation: string;
+        },
+        null,
         Name
       >;
-      list: FunctionReference<
+      status: FunctionReference<
         "query",
         "internal",
-        { limit?: number; targetId: string },
-        Array<{
-          _creationTime: number;
-          _id: string;
-          targetId: string;
-          text: string;
-          userId: string;
-        }>,
+        { name: string },
+        null | {
+          generation: bigint;
+          heartbeat: number;
+          kind: "idle" | "active";
+          lastWorkTs: number;
+        },
         Name
       >;
-      translate: FunctionReference<
-        "action",
+      stop: FunctionReference<
+        "mutation",
         "internal",
-        { baseUrl: string; commentId: string },
-        string,
+        { name: string },
+        null,
         Name
       >;
     };

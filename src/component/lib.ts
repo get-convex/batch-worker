@@ -1,90 +1,63 @@
 import { v } from "convex/values";
+import { mutation, query } from "./_generated/server.js";
 import {
-  action,
-  internalMutation,
-  internalQuery,
-  mutation,
-  query,
-} from "./_generated/server.js";
-import { internal } from "./_generated/api.js";
-import schema from "./schema.js";
+  ensureRunning as ensureRunningHelper,
+  getWorker,
+  stop as stopHelper,
+} from "./kick.js";
+import { vConfig, vStatus } from "./shared.js";
 
-const commentValidator = schema.tables.comments.validator.extend({
-  _id: v.id("comments"),
-  _creationTime: v.number(),
-});
+/**
+ * The public component API. Apps normally call these through the `Worker`
+ * client wrapper (see `@convex-dev/worker`) rather than directly.
+ */
 
-export const list = query({
+export const ensureRunning = mutation({
   args: {
-    targetId: v.string(),
-    limit: v.optional(v.number()),
+    name: v.string(),
+    // Function handles, created app-side with `createFunctionHandle`.
+    workQuery: v.string(),
+    workerMutation: v.string(),
+    queryArgs: v.optional(v.any()),
+    config: v.optional(vConfig.partial()),
   },
-  returns: v.array(commentValidator),
+  returns: v.null(),
   handler: async (ctx, args) => {
-    return await ctx.db
-      .query("comments")
-      .withIndex("targetId", (q) => q.eq("targetId", args.targetId))
-      .order("desc")
-      .take(args.limit ?? 100);
-  },
-});
-
-export const getComment = internalQuery({
-  args: {
-    commentId: v.id("comments"),
-  },
-  returns: v.union(v.null(), commentValidator),
-  handler: async (ctx, args) => {
-    return await ctx.db.get("comments", args.commentId);
-  },
-});
-export const add = mutation({
-  args: {
-    text: v.string(),
-    userId: v.string(),
-    targetId: v.string(),
-  },
-  returns: v.id("comments"),
-  handler: async (ctx, args) => {
-    const commentId = await ctx.db.insert("comments", {
-      text: args.text,
-      userId: args.userId,
-      targetId: args.targetId,
+    await ensureRunningHelper(ctx, {
+      name: args.name,
+      workQuery: args.workQuery,
+      workerMutation: args.workerMutation,
+      queryArgs: args.queryArgs,
+      config: args.config ?? {},
     });
-    return commentId;
-  },
-});
-export const updateComment = internalMutation({
-  args: {
-    commentId: v.id("comments"),
-    text: v.string(),
-  },
-  handler: async (ctx, args) => {
-    await ctx.db.patch("comments", args.commentId, { text: args.text });
+    return null;
   },
 });
 
-export const translate = action({
-  args: {
-    commentId: v.id("comments"),
-    baseUrl: v.string(),
-  },
-  returns: v.string(),
+export const status = query({
+  args: { name: v.string() },
+  returns: v.union(v.null(), vStatus),
   handler: async (ctx, args) => {
-    const comment = (await ctx.runQuery(internal.lib.getComment, {
-      commentId: args.commentId,
-    })) as { text: string; userId: string } | null;
-    if (!comment) {
-      throw new Error("Comment not found");
-    }
-    const response = await fetch(
-      `${args.baseUrl}/api/translate?english=${encodeURIComponent(comment.text)}`,
-    );
-    const data = await response.text();
-    await ctx.runMutation(internal.lib.updateComment, {
-      commentId: args.commentId,
-      text: data,
-    });
-    return data;
+    const worker = await getWorker(ctx, args.name);
+    if (!worker) return null;
+    const state = await ctx.db
+      .query("workerState")
+      .withIndex("name", (q) => q.eq("name", args.name))
+      .unique();
+    return {
+      kind: worker.state.kind,
+      generation: worker.state.generation,
+      lastWorkTs: state?.lastWorkTs ?? 0,
+      heartbeat: state?.heartbeat ?? 0,
+    };
+  },
+});
+
+export const stop = mutation({
+  args: { name: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await stopHelper(ctx, args.name);
+    return null;
   },
 });
