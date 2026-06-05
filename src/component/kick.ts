@@ -147,22 +147,22 @@ export async function ensureMonitor(
  * Stop the worker: cancel its loop and monitor and mark it idle. New work
  * (plus an `ensureRunning` call) will start it again.
  */
-// export async function stop(ctx: MutationCtx, name: string): Promise<void> {
-//   const worker = await getWorker(ctx, name);
-//   if (!worker) return;
-//   const state = await getWorkerState(ctx, name);
-//   if (state?.runnerId) {
-//     await cancelIfPending(ctx, state.runnerId);
-//     await ctx.db.patch("workerState", state._id, { runnerId: undefined });
-//   }
-//   if (worker.monitorId) {
-//     await cancelIfPending(ctx, worker.monitorId);
-//   }
-//   await ctx.db.patch("workers", worker._id, {
-//     state: { kind: "idle" },
-//     monitorId: undefined,
-//   });
-// }
+export async function stop(ctx: MutationCtx, name: string): Promise<void> {
+  const worker = await getWorker(ctx, name);
+  if (!worker) return;
+  const state = await getWorkerState(ctx, name);
+  if (state?.runnerId) {
+    await cancelIfPending(ctx, state.runnerId);
+    await ctx.db.patch("workerState", state._id, { runnerId: undefined });
+  }
+  if (worker.monitorId) {
+    await cancelIfPending(ctx, worker.monitorId);
+  }
+  await ctx.db.patch("workers", worker._id, {
+    state: { kind: "idle" },
+    monitorId: undefined,
+  });
+}
 
 async function cancelIfPending(
   ctx: MutationCtx,

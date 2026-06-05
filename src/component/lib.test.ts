@@ -13,7 +13,7 @@ import {
 import { api, internal } from "./_generated/api.js";
 import schema from "./schema.js";
 import { modules } from "./setup.test.js";
-import { getWorker, getWorkerState } from "./kick.js";
+import { getWorker, getWorkerState, stop } from "./kick.js";
 
 // Dummy function handles. These never get invoked in these tests because we
 // don't drive the scheduler here — the loop body is exercised end-to-end by
@@ -79,7 +79,7 @@ describe("worker component", () => {
   test("stop cancels the loop and goes idle", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ensureRunning, ensureRunningArgs());
-    await t.mutation(api.lib.stop, { name: "" });
+    await t.mutation((ctx) => stop(ctx, ""));
     await t.run(async (ctx) => {
       const worker = await getWorker(ctx, "");
       expect(worker!.state.kind).toBe("idle");
@@ -92,7 +92,7 @@ describe("worker component", () => {
   test("ensureRunning after stop kicks again with a bumped generation", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ensureRunning, ensureRunningArgs());
-    await t.mutation(api.lib.stop, { name: "" });
+    await t.mutation((ctx) => stop(ctx, ""));
     await t.mutation(api.lib.ensureRunning, ensureRunningArgs());
     const worker = await t.run((ctx) => getWorker(ctx, ""));
     expect(worker!.state.kind).toBe("active");
@@ -131,7 +131,7 @@ describe("worker component", () => {
   test("monitor stops itself once the worker is idle", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ensureRunning, ensureRunningArgs());
-    await t.mutation(api.lib.stop, { name: "" });
+    await t.mutation((ctx) => stop(ctx, ""));
 
     await t.mutation(internal.monitor.monitor, { name: "" });
 
@@ -146,7 +146,7 @@ describe("worker component", () => {
     await t.mutation(api.lib.ensureRunning, ensureRunningArgs({ name: "b" }));
     expect((await t.query(api.lib.status, { name: "a" }))?.kind).toBe("active");
     expect((await t.query(api.lib.status, { name: "b" }))?.kind).toBe("active");
-    await t.mutation(api.lib.stop, { name: "a" });
+    await t.mutation((ctx) => stop(ctx, "a"));
     expect((await t.query(api.lib.status, { name: "a" }))?.kind).toBe("idle");
     expect((await t.query(api.lib.status, { name: "b" }))?.kind).toBe("active");
   });
