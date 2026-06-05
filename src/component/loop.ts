@@ -50,9 +50,11 @@ export const loop = internalMutation({
 
     if (work !== null && work !== undefined) {
       let nextArgs: Record<string, Value> = queryArgs;
-      let runAfter: number | undefined;
+      // Default to running again immediately — there may be more work, and an
+      // empty result next iteration cleanly transitions into cooldown.
+      let runAfter: number | undefined = 0;
       try {
-        const mutationRef = worker.workerMutation as unknown as FunctionHandle<
+        const mutationRef = worker.workerMutation as FunctionHandle<
           "mutation",
           any,
           WorkerResult
@@ -74,15 +76,20 @@ export const loop = internalMutation({
           name,
           error: e instanceof Error ? e.message : String(e),
         });
-        await reschedule(ctx, worker, state, generation, config.errorBackoffMs, {
-          // Keep the same args; don't advance past work we failed to process.
-          lastWorkTs: state.lastWorkTs,
-        });
+        await reschedule(
+          ctx,
+          worker,
+          state,
+          generation,
+          config.errorBackoffMs,
+          {
+            // Keep the same args; don't advance past work we failed to process.
+            lastWorkTs: state.lastWorkTs,
+          },
+        );
         return;
       }
-      // Default to running again immediately — there may be more work, and an
-      // empty result next iteration cleanly transitions into cooldown.
-      await reschedule(ctx, worker, state, generation, runAfter ?? 0, {
+      await reschedule(ctx, worker, state, generation, runAfter, {
         queryArgs: nextArgs,
         lastWorkTs: Date.now(),
       });
