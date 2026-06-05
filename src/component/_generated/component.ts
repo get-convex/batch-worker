@@ -51,5 +51,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null | { kind: "idle" } | { kind: "active" },
         Name
       >;
+      stop: FunctionReference<
+        "mutation",
+        "internal",
+        { name: string },
+        null,
+        Name
+      >;
     };
   };

@@ -19,13 +19,10 @@ export const reset = mutation({
   args: {},
   handler: async (ctx) => {
     for (const table of ["e2eEvents", "e2eSamples"] as const) {
-      let docs = await ctx.db.query(table).take(500);
-      while (docs.length > 0) {
-        for (const d of docs) await ctx.db.delete(table, d._id);
-        docs = await ctx.db.query(table).take(500);
-      }
+      const docs = await ctx.db.query(table).collect();
+      for (const d of docs) await ctx.db.delete(table, d._id);
     }
-    await worker.stop(ctx);
+    await ctx.runMutation(components.worker.lib.stop, { name: "e2e" });
   },
 });
 
