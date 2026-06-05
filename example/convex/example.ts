@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { Worker } from "@convex-dev/worker";
+import { Worker, WorkerResult } from "@convex-dev/worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -23,9 +23,9 @@ export const addEvent = mutation({
   handler: async (ctx, { value }) => {
     await ctx.db.insert("events", { value });
     await worker.ensureRunning(ctx, {
+      queryArgs: {},
       workQuery: internal.example.getBatch,
       workerMutation: internal.example.processBatch,
-      queryArgs: {},
     });
   },
 });
@@ -52,7 +52,10 @@ export const getBatch = internalQuery({
  * keep going immediately rather than waiting.
  */
 export const processBatch = internalMutation({
-  args: { ids: v.array(v.id("events")), values: v.array(v.number()) },
+  args: {
+    ids: v.array(v.id("events")),
+    values: v.array(v.number()),
+  },
   handler: async (ctx, { ids, values }) => {
     const sum = values.reduce((a, b) => a + b, 0);
     const totals = await ctx.db
@@ -76,7 +79,9 @@ export const processBatch = internalMutation({
     }
     // Full batch → there's probably more; run again right away.
     if (ids.length === BATCH_SIZE) {
-      return { runAfter: 0 };
+      return {
+        runAfter: 0,
+      } satisfies WorkerResult<unknown>;
     }
   },
 });
