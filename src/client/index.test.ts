@@ -10,7 +10,6 @@ import {
   internalMutationGeneric,
   internalQueryGeneric,
   mutationGeneric,
-  queryGeneric,
 } from "convex/server";
 import { Worker } from "./index.js";
 import { components, initConvexTest } from "./setup.test.js";
@@ -56,30 +55,12 @@ export const enqueue = mutationGeneric({
   },
 });
 
-export const status = queryGeneric({
-  args: {},
-  handler: async (ctx) => worker.status(ctx),
-});
-
-export const stop = mutationGeneric({
-  args: {},
-  handler: async (ctx) => worker.stop(ctx),
-});
-
-export const remaining = queryGeneric({
-  args: {},
-  handler: async (ctx) => (await ctx.db.query("items").take(1000)).length,
-});
-
 const testApi = (
   anyApi as unknown as ApiFromModules<{
     "index.test": {
       getBatch: typeof getBatch;
       processBatch: typeof processBatch;
       enqueue: typeof enqueue;
-      status: typeof status;
-      stop: typeof stop;
-      remaining: typeof remaining;
     };
   }>
 )["index.test"];
@@ -98,18 +79,15 @@ describe("Worker client", () => {
     await t.mutation(testApi.enqueue, { value: 2 });
 
     // Worker should be active right after enqueue.
-    expect((await t.query(testApi.status, {}))?.kind).toBe("active");
+    expect((await t.query((ctx) => worker.status(ctx)))?.kind).toBe("active");
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    expect(await t.query(testApi.remaining, {})).toBe(0);
-    expect((await t.query(testApi.status, {}))?.kind).toBe("idle");
-  });
-
-  test("stop halts the worker", async () => {
-    const t = initConvexTest(schema);
-    await t.mutation(testApi.enqueue, { value: 1 });
-    await t.mutation(testApi.stop, {});
-    expect((await t.query(testApi.status, {}))?.kind).toBe("idle");
+    expect(
+      await t.query(
+        async (ctx) => (await ctx.db.query("items").take(1000)).length,
+      ),
+    ).toBe(0);
+    expect((await t.query((ctx) => worker.status(ctx)))?.kind).toBe("idle");
   });
 });

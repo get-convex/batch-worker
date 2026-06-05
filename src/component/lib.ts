@@ -1,11 +1,7 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
-import {
-  ensureRunning as ensureRunningHelper,
-  getWorker,
-  stop as stopHelper,
-} from "./kick.js";
-import { vConfig, vStatus } from "./shared.js";
+import { ensureRunning as ensureRunningHelper, getWorker } from "./kick.js";
+import { vConfig, vRunState } from "./shared.js";
 
 /**
  * The public component API. Apps normally call these through the `Worker`
@@ -50,14 +46,5 @@ export const status = query({
       lastWorkTs: state?.lastWorkTs ?? 0,
       heartbeat: state?.heartbeat ?? 0,
     };
-  },
-});
-
-export const stop = mutation({
-  args: { name: v.string() },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    await stopHelper(ctx, args.name);
-    return null;
   },
 });

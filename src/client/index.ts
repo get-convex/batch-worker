@@ -149,11 +149,6 @@ export class Worker {
     });
   }
 
-  /** Stop the worker's loop and monitor. It restarts on the next enqueue. */
-  async stop(ctx: RunMutationCtx, name?: string): Promise<void> {
-    await ctx.runMutation(this.component.lib.stop, { name: this.nameFor(name) });
-  }
-
   private nameFor(name?: string): string {
     return name ?? this.options.name ?? "";
   }
