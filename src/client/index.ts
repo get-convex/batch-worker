@@ -4,10 +4,13 @@ import {
   type FunctionReference,
 } from "convex/server";
 import type { ComponentApi } from "../component/_generated/component.js";
-import { type Config, type Status } from "../component/shared.js";
+import {
+  type Config as WorkerConfig,
+  type RunState as WorkerStatus,
+} from "../component/shared.js";
 
 export { logLevel as vLogLevel, type LogLevel } from "../component/logging.js";
-export type { Config as WorkerConfig, Status as WorkerStatus };
+export type { WorkerConfig, WorkerStatus };
 
 /**
  * What a worker mutation may return to steer the loop.
@@ -32,9 +35,7 @@ export type WorkerResult<QueryArgs> = {
  * A handle to a context object that can run mutations.
  */
 export type RunMutationCtx = {
-  runMutation: <
-    Mutation extends FunctionReference<"mutation", "internal">,
-  >(
+  runMutation: <Mutation extends FunctionReference<"mutation", "internal">>(
     mutation: Mutation,
     args: Mutation["_args"],
   ) => Promise<Mutation["_returnType"]>;
@@ -57,7 +58,7 @@ export type WorkerOptions = {
   /**
    * Default loop configuration, overridable per `ensureRunning` call.
    */
-  config?: Partial<Config>;
+  config?: Partial<WorkerConfig>;
 };
 
 /**
@@ -108,12 +109,7 @@ export class Worker {
     ctx: RunMutationCtx,
     args: {
       /** Returns the next batch of work, or `null` when there's nothing to do. */
-      workQuery: FunctionReference<
-        "query",
-        "internal",
-        QueryArgs,
-        Work | null
-      >;
+      workQuery: FunctionReference<"query", "internal", QueryArgs, Work | null>;
       /** Processes a batch returned by the work query. */
       workerMutation: FunctionReference<
         "mutation",
@@ -126,7 +122,7 @@ export class Worker {
       /** Worker name; defaults to the instance's configured name. */
       name?: string;
       /** Per-call config overrides. */
-      config?: Partial<Config>;
+      config?: Partial<WorkerConfig>;
     },
   ): Promise<void> {
     const [workQuery, workerMutation] = await Promise.all([
@@ -143,7 +139,7 @@ export class Worker {
   }
 
   /** Get the current run status of the worker, or `null` if it's never run. */
-  async status(ctx: RunQueryCtx, name?: string): Promise<Status | null> {
+  async status(ctx: RunQueryCtx, name?: string): Promise<WorkerStatus | null> {
     return ctx.runQuery(this.component.lib.status, {
       name: this.nameFor(name),
     });

@@ -121,9 +121,7 @@ export const loop = internalMutation({
       heartbeat: Date.now(),
       runnerId: undefined,
     });
-    await ctx.db.patch("workers", worker._id, {
-      state: { kind: "idle", generation },
-    });
+    await ctx.db.patch("workers", worker._id, { state: { kind: "idle" } });
     console.debug(`[loop] "${name}" → idle`);
   },
 });

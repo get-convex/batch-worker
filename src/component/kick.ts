@@ -52,7 +52,7 @@ export async function ensureRunning(
       workQuery: args.workQuery,
       workerMutation: args.workerMutation,
       config,
-      state: { kind: "idle", generation: 0n },
+      state: { kind: "idle" },
     });
     await kick(ctx, (await ctx.db.get("workers", workerId))!);
     return;
@@ -112,7 +112,7 @@ export async function startLoop(
     heartbeat: Date.now(),
   });
   await ctx.db.patch("workers", worker._id, {
-    state: { kind: "active", generation },
+    state: { kind: "active" },
   });
 }
 

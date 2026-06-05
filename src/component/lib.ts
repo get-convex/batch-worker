@@ -32,19 +32,12 @@ export const ensureRunning = mutation({
 
 export const status = query({
   args: { name: v.string() },
-  returns: v.union(v.null(), vStatus),
+  returns: v.union(v.null(), vRunState),
   handler: async (ctx, args) => {
     const worker = await getWorker(ctx, args.name);
     if (!worker) return null;
-    const state = await ctx.db
-      .query("workerState")
-      .withIndex("name", (q) => q.eq("name", args.name))
-      .unique();
     return {
       kind: worker.state.kind,
-      generation: worker.state.generation,
-      lastWorkTs: state?.lastWorkTs ?? 0,
-      heartbeat: state?.heartbeat ?? 0,
     };
   },
 });

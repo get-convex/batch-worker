@@ -47,7 +47,6 @@ describe("worker component", () => {
       const worker = await getWorker(ctx, "");
       assert(worker);
       expect(worker.state.kind).toBe("active");
-      expect(worker.state.generation).toBe(1n);
       expect(worker.monitorId).toBeDefined();
       expect(worker.workQuery).toBe(QUERY);
 
@@ -75,7 +74,6 @@ describe("worker component", () => {
     await t.mutation(api.lib.ensureRunning, ensureRunningArgs());
     const status = await t.query(api.lib.status, { name: "" });
     expect(status?.kind).toBe("active");
-    expect(status?.generation).toBe(1n);
   });
 
   test("stop cancels the loop and goes idle", async () => {
@@ -98,7 +96,8 @@ describe("worker component", () => {
     await t.mutation(api.lib.ensureRunning, ensureRunningArgs());
     const worker = await t.run((ctx) => getWorker(ctx, ""));
     expect(worker!.state.kind).toBe("active");
-    expect(worker!.state.generation).toBe(2n);
+    const workerState = await t.run((ctx) => getWorkerState(ctx, ""));
+    expect(workerState!.generation).toBe(2n);
   });
 
   test("a superseded loop generation exits without changing state", async () => {

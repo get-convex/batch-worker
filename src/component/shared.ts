@@ -62,8 +62,8 @@ export const DEFAULT_CONFIG: Config = {
  *   work will be picked up by the running loop, so `ensureRunning` no-ops.
  */
 export const vRunState = v.union(
-  v.object({ kind: v.literal("idle"), generation: v.int64() }),
-  v.object({ kind: v.literal("active"), generation: v.int64() }),
+  v.object({ kind: v.literal("idle") }),
+  v.object({ kind: v.literal("active") }),
 );
 export type RunState = Infer<typeof vRunState>;
 
@@ -71,25 +71,15 @@ export type RunState = Infer<typeof vRunState>;
  * What a worker mutation may return to influence the loop. All fields are
  * optional; returning nothing (or null) uses the defaults.
  */
-export type WorkerResult =
-  | null
-  | {
-      /**
-       * Delay in ms before the loop runs again. Default: re-run immediately.
-       * Return a large value to back off (e.g. when rate limited).
-       */
-      runAfter?: number;
-      /**
-       * Updated args to pass to the work query on the next iteration, e.g. to
-       * advance a cursor. Persists across iterations.
-       */
-      queryArgs?: unknown;
-    };
-
-export const vStatus = v.object({
-  kind: v.union(v.literal("idle"), v.literal("active")),
-  generation: v.int64(),
-  lastWorkTs: v.number(),
-  heartbeat: v.number(),
-});
-export type Status = Infer<typeof vStatus>;
+export type WorkerResult = null | {
+  /**
+   * Delay in ms before the loop runs again. Default: re-run immediately.
+   * Return a large value to back off (e.g. when rate limited).
+   */
+  runAfter?: number;
+  /**
+   * Updated args to pass to the work query on the next iteration, e.g. to
+   * advance a cursor. Persists across iterations.
+   */
+  queryArgs?: unknown;
+};
