@@ -10,8 +10,9 @@ import {
   internalMutationGeneric,
   internalQueryGeneric,
   mutationGeneric,
+  queryGeneric,
 } from "convex/server";
-import { Worker } from "./index.js";
+import { Worker, vBatchQueryArgs, vBatchResult } from "./index.js";
 import { components, initConvexTest } from "./setup.test.js";
 
 const schema = defineSchema({
@@ -23,19 +24,22 @@ const worker = new Worker(components.worker, {
 });
 
 export const getBatch = internalQueryGeneric({
-  args: {},
+  args: vBatchQueryArgs,
+  returns: vBatchResult(v.object({ ids: v.array(v.id("items")) })),
   handler: async (ctx) => {
     const items = await ctx.db.query("items").take(5);
-    if (items.length === 0) return null;
+    if (items.length === 0) {
+      return { kind: "idle" as const };
+    }
     return {
-      ids: items.map((i: { _id: string }) => i._id),
-      values: items.map((i: { value: number }) => i.value),
+      kind: "work" as const,
+      batch: { ids: items.map((i) => i._id) },
     };
   },
 });
 
 export const processBatch = internalMutationGeneric({
-  args: { ids: v.array(v.id("items")), values: v.array(v.number()) },
+  args: { ids: v.array(v.id("items")) },
   handler: async (ctx, { ids }) => {
     for (const id of ids) {
       await ctx.db.delete("items", id);
@@ -47,12 +51,31 @@ export const enqueue = mutationGeneric({
   args: { value: v.number() },
   handler: async (ctx, { value }) => {
     await ctx.db.insert("items", { value });
-    await worker.ensureRunning(ctx, {
+    await worker.ping(ctx, {
       workQuery: testApi.getBatch,
       workerMutation: testApi.processBatch,
-      queryArgs: {},
     });
   },
+});
+
+export const status = queryGeneric({
+  args: {},
+  handler: async (ctx) => worker.status(ctx),
+});
+
+export const startWorker = mutationGeneric({
+  args: {},
+  handler: async (ctx) => worker.start(ctx),
+});
+
+export const stopWorker = mutationGeneric({
+  args: {},
+  handler: async (ctx) => worker.stop(ctx),
+});
+
+export const remaining = queryGeneric({
+  args: {},
+  handler: async (ctx) => (await ctx.db.query("items").take(1000)).length,
 });
 
 const testApi = (
@@ -61,6 +84,10 @@ const testApi = (
       getBatch: typeof getBatch;
       processBatch: typeof processBatch;
       enqueue: typeof enqueue;
+      status: typeof status;
+      startWorker: typeof startWorker;
+      stopWorker: typeof stopWorker;
+      remaining: typeof remaining;
     };
   }>
 )["index.test"];
@@ -73,21 +100,28 @@ describe("Worker client", () => {
     vi.useRealTimers();
   });
 
-  test("ensureRunning drives the loop and processes work", async () => {
+  test("ping drives the loop and processes work", async () => {
     const t = initConvexTest(schema);
     await t.mutation(testApi.enqueue, { value: 1 });
     await t.mutation(testApi.enqueue, { value: 2 });
 
-    // Worker should be active right after enqueue.
-    expect((await t.query((ctx) => worker.status(ctx)))?.kind).toBe("active");
+    expect((await t.query(testApi.status, {}))?.kind).toBe("running");
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    expect(
-      await t.query(
-        async (ctx) => (await ctx.db.query("items").take(1000)).length,
-      ),
-    ).toBe(0);
-    expect((await t.query((ctx) => worker.status(ctx)))?.kind).toBe("idle");
+    expect(await t.query(testApi.remaining, {})).toBe(0);
+    expect((await t.query(testApi.status, {}))?.kind).toBe("idle");
+  });
+
+  test("stop halts the worker; start resumes it", async () => {
+    const t = initConvexTest(schema);
+    await t.mutation(testApi.enqueue, { value: 1 });
+    await t.mutation(testApi.stopWorker, {});
+    expect((await t.query(testApi.status, {}))?.kind).toBe("idle");
+
+    await t.mutation(testApi.startWorker, {});
+    expect((await t.query(testApi.status, {}))?.kind).toBe("running");
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await t.query(testApi.remaining, {})).toBe(0);
   });
 });

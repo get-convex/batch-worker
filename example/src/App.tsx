@@ -17,7 +17,7 @@ function App() {
       <div className="card">
         <p style={{ lineHeight: 1.6 }}>
           Each event you add is inserted into a queue table. After inserting we
-          call <code>worker.ensureRunning</code>, and the component runs a single
+          call <code>worker.ping</code>, and the component runs a single
           background loop that batches the events and sums them — restarting
           itself if it ever dies, and going idle when the queue drains.
         </p>

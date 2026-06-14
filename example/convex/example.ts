@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { Worker, WorkerResult } from "@convex-dev/worker";
+import { Worker, vBatchQueryArgs, vBatchResult } from "@convex-dev/worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -15,15 +15,14 @@ const worker = new Worker(components.worker);
 const BATCH_SIZE = 10;
 
 /**
- * Add an event to the queue. After inserting, we tell the worker to make sure
- * its loop is running — it'll batch up and process everything.
+ * Add an event to the queue. After inserting, ping the worker so its loop runs
+ * — it'll batch up and process everything.
  */
 export const addEvent = mutation({
   args: { value: v.number() },
   handler: async (ctx, { value }) => {
     await ctx.db.insert("events", { value });
-    await worker.ensureRunning(ctx, {
-      queryArgs: {},
+    await worker.ping(ctx, {
       workQuery: internal.example.getBatch,
       workerMutation: internal.example.processBatch,
     });
@@ -31,31 +30,35 @@ export const addEvent = mutation({
 });
 
 /**
- * The work query: returns the next batch of events, or `null` when the queue
- * is empty. Its return type lines up with `processBatch`'s args.
+ * The work query: returns the next batch of work, or `idle` when the queue is
+ * empty. Its `batch` shape lines up with `processBatch`'s args.
  */
 export const getBatch = internalQuery({
-  args: {},
+  args: vBatchQueryArgs,
+  returns: vBatchResult(
+    v.object({ ids: v.array(v.id("events")), values: v.array(v.number()) }),
+  ),
   handler: async (ctx) => {
     const events = await ctx.db.query("events").take(BATCH_SIZE);
-    if (events.length === 0) return null;
+    if (events.length === 0) {
+      return { kind: "idle" as const };
+    }
     return {
-      ids: events.map((e) => e._id),
-      values: events.map((e) => e.value),
+      kind: "work" as const,
+      batch: {
+        ids: events.map((e) => e._id),
+        values: events.map((e) => e.value),
+      },
     };
   },
 });
 
 /**
- * The worker mutation: processes a batch. It owns cleanup (deleting the rows
- * it processed). Returning `{ runAfter: 0 }` on a full batch tells the loop to
- * keep going immediately rather than waiting.
+ * The worker mutation: processes a batch. It owns cleanup (deleting the rows it
+ * processed). Returning nothing re-runs immediately to drain the rest.
  */
 export const processBatch = internalMutation({
-  args: {
-    ids: v.array(v.id("events")),
-    values: v.array(v.number()),
-  },
+  args: { ids: v.array(v.id("events")), values: v.array(v.number()) },
   handler: async (ctx, { ids, values }) => {
     const sum = values.reduce((a, b) => a + b, 0);
     const totals = await ctx.db
@@ -76,12 +79,6 @@ export const processBatch = internalMutation({
     }
     for (const id of ids) {
       await ctx.db.delete("events", id);
-    }
-    // Full batch → there's probably more; run again right away.
-    if (ids.length === BATCH_SIZE) {
-      return {
-        runAfter: 0,
-      } satisfies WorkerResult<unknown>;
     }
   },
 });

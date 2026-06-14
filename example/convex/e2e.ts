@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { Worker } from "@convex-dev/worker";
+import { Worker, vBatchQueryArgs, vBatchResult } from "@convex-dev/worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -33,45 +33,56 @@ export const enqueue = mutation({
     for (let i = 0; i < count; i++) {
       await ctx.db.insert("e2eEvents", { value: 1 });
     }
-    await worker.ensureRunning(ctx, {
+    await worker.ping(ctx, {
       workQuery: internal.e2e.getBatch,
       workerMutation: internal.e2e.processBatch,
-      queryArgs: {},
     });
   },
 });
 
 export const getBatch = internalQuery({
-  args: {},
+  args: vBatchQueryArgs,
+  returns: vBatchResult(
+    v.object({
+      items: v.array(
+        v.object({ id: v.id("e2eEvents"), creationTime: v.number() }),
+      ),
+    }),
+  ),
   handler: async (ctx) => {
     const events = await ctx.db.query("e2eEvents").take(BATCH_SIZE);
-    if (events.length === 0) return null;
+    if (events.length === 0) {
+      return { kind: "idle" as const };
+    }
     return {
-      batch: events.map((e) => ({ id: e._id, creationTime: e._creationTime })),
+      kind: "work" as const,
+      batch: {
+        items: events.map((e) => ({
+          id: e._id,
+          creationTime: e._creationTime,
+        })),
+      },
     };
   },
 });
 
 export const processBatch = internalMutation({
   args: {
-    batch: v.array(
+    items: v.array(
       v.object({ id: v.id("e2eEvents"), creationTime: v.number() }),
     ),
   },
-  handler: async (ctx, { batch }) => {
+  handler: async (ctx, { items }) => {
     const now = Date.now();
-    const latencies = batch.map((b) => now - b.creationTime);
+    const latencies = items.map((b) => now - b.creationTime);
     await ctx.db.insert("e2eSamples", {
       processedAt: now,
-      batchSize: batch.length,
+      batchSize: items.length,
       oldestLatencyMs: Math.max(...latencies),
       newestLatencyMs: Math.min(...latencies),
     });
-    for (const b of batch) {
+    for (const b of items) {
       await ctx.db.delete("e2eEvents", b.id);
-    }
-    if (batch.length === BATCH_SIZE) {
-      return { runAfter: 0 };
     }
   },
 });
