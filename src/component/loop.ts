@@ -1,25 +1,37 @@
 import { v, type Value } from "convex/values";
 import type { FunctionHandle } from "convex/server";
-import { internal } from "./_generated/api.js";
-import type { Doc } from "./_generated/dataModel.js";
 import { internalMutation, type MutationCtx } from "./_generated/server.js";
 import { runSnapshotQuery } from "./future.js";
 import { createLogger } from "./logging.js";
-import { getWorker, getWorkerState } from "./kick.js";
-import { type WorkerResult } from "./shared.js";
+import {
+  continueRunning,
+  getWorker,
+  getWorkerState,
+  goIdle,
+  scheduleWaiting,
+} from "./kick.js";
+import {
+  RUNNING_THRESHOLD_MS,
+  type BatchQueryArgs,
+  type WorkerResult,
+} from "./shared.js";
+
+type BatchResult =
+  | { kind: "work"; batch: Value }
+  | { kind: "idle"; timeoutMs?: number };
 
 /**
- * The worker's main loop. There is at most one of these scheduled or running
- * per worker at a time, enforced by the `generation` check: a stale scheduled
- * loop (whose generation has been bumped by a newer kick or by the monitor)
- * exits silently.
+ * The worker's main loop. At most one is scheduled/running per worker, enforced
+ * by the `generation` check: a stale scheduled loop (superseded by a newer
+ * (re)start or the monitor) exits silently.
  *
- * Each iteration:
- *  1. Runs the user's work query as a *snapshot* read (no OCC dependency).
- *  2. If it returned work, runs the user's worker mutation with it.
- *  3. Reschedules itself: immediately after work, after `pollIntervalMs` while
- *     cooling down, or — once the cooldown expires with no work — confirms
- *     with a real (dependency-taking) read and goes idle.
+ * Each iteration runs the work query as a *snapshot* read (no OCC dependency),
+ * runs the worker mutation if there's a batch, then reschedules itself:
+ *  - more work / no result hint → run again immediately,
+ *  - mutation returned debounce/timeout → wait (interruptible) accordingly,
+ *  - query reported idle with a timeout → sleep until then,
+ *  - query idle within cooldown → poll,
+ *  - cooldown elapsed → confirm with a real (dependency) read, then go idle.
  */
 export const loop = internalMutation({
   args: { name: v.string(), generation: v.int64() },
@@ -37,124 +49,97 @@ export const loop = internalMutation({
     }
 
     const config = worker.config;
-    const queryArgs = (state.queryArgs ?? {}) as Record<string, Value>;
+    const now = Date.now();
+    const queryArgs: BatchQueryArgs = { name };
     const queryRef = worker.workQuery as unknown as FunctionHandle<
       "query",
-      any,
-      Value | null
+      BatchQueryArgs,
+      BatchResult
     >;
 
-    // Snapshot read: doesn't take an OCC dependency, so a burst of concurrent
-    // inserts while we drain the queue won't force this loop to retry.
-    const work = await runSnapshotQuery(worker.workQuery, queryArgs);
+    // Snapshot read: no OCC dependency, so concurrent inserts while we drain
+    // don't force this loop to retry.
+    const result = (await runSnapshotQuery(
+      worker.workQuery,
+      queryArgs as unknown as Record<string, Value>,
+    )) as BatchResult | null;
 
-    if (work !== null && work !== undefined) {
-      let nextArgs: Record<string, Value> = queryArgs;
-      // Default to running again immediately — there may be more work, and an
-      // empty result next iteration cleanly transitions into cooldown.
-      let runAfter: number | undefined = 0;
+    // ── There's work: run the worker mutation, then reschedule. ──
+    if (result && result.kind === "work") {
+      let ret: WorkerResult = null;
       try {
-        const mutationRef = worker.workerMutation as FunctionHandle<
+        const mutationRef = worker.workerMutation as unknown as FunctionHandle<
           "mutation",
           any,
           WorkerResult
         >;
-        const result = await ctx.runMutation(mutationRef, work);
-        if (result && typeof result === "object") {
-          if (result.queryArgs !== undefined) {
-            nextArgs = result.queryArgs as Record<string, Value>;
-          }
-          if (typeof result.runAfter === "number") {
-            runAfter = result.runAfter;
-          }
-        }
+        ret = await ctx.runMutation(mutationRef, result.batch);
       } catch (e) {
-        // Report so the app can alert on it, then back off and retry. The
-        // loop keeps running (and failing) until the code is fixed.
         console.error(`[loop] "${name}" worker mutation threw:`, e);
         console.event("error", {
           name,
           error: e instanceof Error ? e.message : String(e),
         });
-        await reschedule(
+        // Hard back off (debounce == timeout, so pings don't interrupt) and
+        // retry; keep lastWorkTs so we stay warm.
+        await scheduleWaiting(
           ctx,
           worker,
-          state,
-          generation,
           config.errorBackoffMs,
-          {
-            // Keep the same args; don't advance past work we failed to process.
-            lastWorkTs: state.lastWorkTs,
-          },
+          config.errorBackoffMs,
         );
         return;
       }
-      await reschedule(ctx, worker, state, generation, runAfter, {
-        queryArgs: nextArgs,
-        lastWorkTs: Date.now(),
-      });
+      const debounceMs = ret?.debounceMs ?? 0;
+      const timeoutMs = Math.max(ret?.timeoutMs ?? 0, debounceMs);
+      if (timeoutMs <= RUNNING_THRESHOLD_MS) {
+        await continueRunning(ctx, worker, timeoutMs, now);
+      } else {
+        await scheduleWaiting(ctx, worker, debounceMs, timeoutMs, now);
+      }
       return;
     }
 
-    // No work in the snapshot. Stay warm and keep polling until the cooldown
-    // window elapses, so a trickle of new work is picked up promptly.
-    const sinceWork = Date.now() - state.lastWorkTs;
+    // ── No work, but the query told us when to look again. ──
+    const idleTimeoutMs = result?.kind === "idle" ? result.timeoutMs : undefined;
+    if (idleTimeoutMs != null) {
+      if (await confirmHasWork(ctx, queryRef, queryArgs)) {
+        await continueRunning(ctx, worker, 0);
+        return;
+      }
+      if (idleTimeoutMs <= RUNNING_THRESHOLD_MS) {
+        await continueRunning(ctx, worker, idleTimeoutMs);
+      } else {
+        // debounce 0: a ping can interrupt the sleep at any time.
+        await scheduleWaiting(ctx, worker, 0, idleTimeoutMs);
+      }
+      return;
+    }
+
+    // ── No work and no hint: stay warm and poll for the cooldown window. ──
+    const sinceWork = now - state.lastWorkTs;
     if (state.lastWorkTs > 0 && sinceWork < config.cooldownMs) {
-      console.debug(`[loop] "${name}" cooling down, polling again`);
-      await reschedule(
-        ctx,
-        worker,
-        state,
-        generation,
-        config.pollIntervalMs,
-        {},
-      );
+      await continueRunning(ctx, worker, config.pollIntervalMs);
       return;
     }
 
-    // Cooldown elapsed. Re-run the query with a *real* dependency so a racing
-    // insert (committed after our snapshot) forces an OCC retry and we notice
-    // the new work instead of going idle and dropping it.
-    const confirm = await ctx.runQuery(queryRef, queryArgs);
-    if (confirm !== null && confirm !== undefined) {
-      console.debug(`[loop] "${name}" found work on confirm, continuing`);
-      await reschedule(ctx, worker, state, generation, 0, {});
+    // Cooldown elapsed. Confirm with a real dependency read so a racing insert
+    // forces an OCC retry instead of being dropped, then go idle.
+    if (await confirmHasWork(ctx, queryRef, queryArgs)) {
+      await continueRunning(ctx, worker, 0);
       return;
     }
-
-    // Genuinely nothing to do — go idle.
-    await ctx.db.patch("workerState", state._id, {
-      generation,
-      heartbeat: Date.now(),
-      runnerId: undefined,
-    });
-    await ctx.db.patch("workers", worker._id, { state: { kind: "idle" } });
+    await goIdle(ctx, worker, state);
     console.debug(`[loop] "${name}" → idle`);
   },
 });
 
-/**
- * Schedule the next loop iteration and persist loop state. Bumps the
- * generation so this becomes the only valid runner. Does NOT touch the
- * `workers` doc (stays "active"), keeping `ensureRunning` OCC-free.
- */
-async function reschedule(
+/** A real (dependency-taking) read of the work query. */
+async function confirmHasWork(
   ctx: MutationCtx,
-  worker: Doc<"workers">,
-  state: Doc<"workerState">,
-  generation: bigint,
-  delayMs: number,
-  patch: { queryArgs?: Record<string, Value>; lastWorkTs?: number },
-): Promise<void> {
-  const nextGen = generation + 1n;
-  const runnerId = await ctx.scheduler.runAfter(delayMs, internal.loop.loop, {
-    name: worker.name,
-    generation: nextGen,
-  });
-  await ctx.db.patch("workerState", state._id, {
-    generation: nextGen,
-    runnerId,
-    heartbeat: Date.now(),
-    ...patch,
-  });
+  queryRef: FunctionHandle<"query", BatchQueryArgs, BatchResult>,
+  queryArgs: BatchQueryArgs,
+): Promise<boolean> {
+  const confirm = (await ctx.runQuery(queryRef, queryArgs)) as BatchResult | null;
+  return !!confirm && confirm.kind === "work";
 }

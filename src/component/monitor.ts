@@ -1,15 +1,22 @@
 import { v } from "convex/values";
-import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { internalMutation, type MutationCtx } from "./_generated/server.js";
 import { createLogger } from "./logging.js";
-import { getWorker, getWorkerState, startLoop } from "./kick.js";
+import {
+  cancelMonitor,
+  ensureMonitorBehind,
+  getWorker,
+  getWorkerState,
+  startLoop,
+} from "./kick.js";
 
 /**
- * Periodically checks that an active worker's loop is still alive and restarts
- * it if it died unexpectedly (e.g. an OCC pile-up or a hard scheduler error
- * that the loop's own try/catch didn't cover). Reschedules itself while the
- * worker is active and stops once it goes idle.
+ * Liveness watchdog. Scheduled ~`monitorLagMs` after the loop's next run by
+ * the scheduling path, and pushed back as the loop keeps running. It therefore
+ * only fires if the loop failed to run on time:
+ *  - worker idle → nothing to watch, clear ourselves.
+ *  - loop runner dead → restart the loop.
+ *  - loop runner still pending/running → we fired early; re-arm behind it.
  */
 export const monitor = internalMutation({
   args: { name: v.string() },
@@ -20,8 +27,7 @@ export const monitor = internalMutation({
     const console = createLogger(worker.config.logLevel);
 
     if (worker.state.kind === "idle") {
-      // Nothing to watch; clear our handle so a future kick reschedules us.
-      await ctx.db.patch("workers", worker._id, { monitorId: undefined });
+      await cancelMonitor(ctx, worker);
       console.debug(`[monitor] "${name}" idle, stopping`);
       return;
     }
@@ -30,17 +36,16 @@ export const monitor = internalMutation({
     if (await isLoopDead(ctx, state?.runnerId)) {
       console.error(`[monitor] "${name}" loop is not running — restarting`);
       console.event("restart", { name });
-      await startLoop(ctx, worker);
+      // startLoop schedules a fresh runner and re-arms the monitor behind it.
+      await startLoop(ctx, worker, 0);
+      return;
     }
 
-    // Check again later. (We reschedule ourselves whether or not we restarted
-    // the loop, so monitoring continues across a restart.)
-    const monitorId = await ctx.scheduler.runAfter(
-      worker.config.monitorIntervalMs,
-      internal.monitor.monitor,
-      { name },
-    );
-    await ctx.db.patch("workers", worker._id, { monitorId });
+    // Loop is alive (scheduled or running) but we fired anyway — re-arm behind
+    // its next run so we keep trailing it.
+    const loopRunAtMs =
+      worker.state.kind === "waiting" ? worker.state.runAtMs : Date.now();
+    await ensureMonitorBehind(ctx, worker._id, loopRunAtMs);
   },
 });
 
@@ -51,8 +56,6 @@ async function isLoopDead(
   if (!runnerId) return true;
   const fn = await ctx.db.system.get("_scheduled_functions", runnerId);
   if (!fn) return true;
-  // pending / inProgress → the loop is scheduled or running: healthy.
-  // success → it finished without rescheduling a successor while still marked
-  // active, which means it died mid-flight. failed / canceled → also dead.
+  // pending / inProgress → scheduled or running: healthy.
   return fn.state.kind !== "pending" && fn.state.kind !== "inProgress";
 }

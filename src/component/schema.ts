@@ -3,10 +3,10 @@ import { v } from "convex/values";
 import { vConfig, vRunState } from "./shared.js";
 
 export default defineSchema({
-  // One row per named worker. Written rarely — only when the worker is
-  // created, reconfigured, or transitions between idle and active. This lets
-  // `ensureRunning` read it on every insert without OCC-conflicting with the
-  // fast-looping `loop`, which never writes this doc while actively running.
+  // One row per named worker. Written rarely — only on create/reconfigure,
+  // run-state transitions, and the occasional monitor refresh. This lets
+  // `ping`/`start` read it on every insert without OCC-conflicting with the
+  // fast-looping `loop`, which doesn't write this doc while actively running.
   workers: defineTable({
     name: v.string(),
     // Function handles (created in the app via createFunctionHandle).
@@ -14,25 +14,27 @@ export default defineSchema({
     workerMutation: v.string(),
     config: vConfig,
     state: vRunState,
-    // The self-rescheduling monitor that restarts the loop if it dies.
+    // The monitor that restarts the loop if it dies, scheduled to fire
+    // `monitorLagMs` after the loop's next run and refreshed as it approaches.
     monitorId: v.optional(v.id("_scheduled_functions")),
+    monitorRunAtMs: v.optional(v.number()),
   }).index("name", ["name"]),
 
-  // One row per named worker, owned and written by `loop` on every iteration.
-  // Kept separate from `workers` so its high churn doesn't conflict with
-  // `ensureRunning`. Never read by `ensureRunning`.
+  // One row per named worker, owned and written by `loop` on every iteration
+  // (and by `ping`/`start` only while the loop is idle or interruptibly
+  // waiting). Kept separate from `workers` so its high churn doesn't conflict
+  // with the per-insert `ping`/`start` read.
   workerState: defineTable({
     name: v.string(),
-    // Monotonically bumped each iteration & each kick. A scheduled loop whose
-    // generation no longer matches has been superseded and exits silently.
+    // Bumped each iteration & on every (re)start. A scheduled loop whose
+    // generation no longer matches has been superseded and exits.
     generation: v.int64(),
-    // Current args for the work query; advanced by the worker mutation.
-    queryArgs: v.any(),
     // When the loop last saw work; drives the cooldown window.
     lastWorkTs: v.number(),
-    // Updated each iteration; lets the monitor detect a wedged loop.
+    // Updated each iteration; lets the monitor reason about liveness.
     heartbeat: v.number(),
-    // The currently-scheduled loop invocation, checked by the monitor.
+    // The currently-scheduled loop invocation, checked by the monitor and
+    // canceled when a ping interrupts a wait.
     runnerId: v.optional(v.id("_scheduled_functions")),
   }).index("name", ["name"]),
 });

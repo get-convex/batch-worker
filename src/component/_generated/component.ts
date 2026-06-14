@@ -24,7 +24,7 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     lib: {
-      ensureRunning: FunctionReference<
+      ping: FunctionReference<
         "mutation",
         "internal",
         {
@@ -33,14 +33,20 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             debounceMs?: number;
             errorBackoffMs?: number;
             logLevel?: "DEBUG" | "TRACE" | "INFO" | "REPORT" | "WARN" | "ERROR";
-            monitorIntervalMs?: number;
+            monitorLagMs?: number;
             pollIntervalMs?: number;
           };
           name: string;
-          queryArgs?: any;
           workQuery: string;
           workerMutation: string;
         },
+        null,
+        Name
+      >;
+      start: FunctionReference<
+        "mutation",
+        "internal",
+        { name: string },
         null,
         Name
       >;
@@ -48,7 +54,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         { name: string },
-        null | { kind: "idle" } | { kind: "active" },
+        null | {
+          generation: bigint;
+          heartbeat: number;
+          kind: "idle" | "running" | "waiting";
+          lastWorkTs: number;
+        },
         Name
       >;
       stop: FunctionReference<

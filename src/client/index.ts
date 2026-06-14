@@ -3,37 +3,37 @@ import {
   type DefaultFunctionArgs,
   type FunctionReference,
 } from "convex/server";
+import type { Infer } from "convex/values";
 import type { ComponentApi } from "../component/_generated/component.js";
 import {
-  type Config as WorkerConfig,
-  type RunState as WorkerStatus,
+  type Config,
+  type Status,
+  vBatchQueryArgs,
 } from "../component/shared.js";
 
+export {
+  vBatchQueryArgs,
+  vBatchResult,
+  vWorkerResult,
+  type BatchQueryArgs,
+  type WorkerResult,
+} from "../component/shared.js";
 export { logLevel as vLogLevel, type LogLevel } from "../component/logging.js";
-export type { WorkerConfig, WorkerStatus };
+export type { Config as WorkerConfig, Status as WorkerStatus };
+
+/** The args every work query receives — today just the worker's `name`. */
+export type QueryArgs = Infer<typeof vBatchQueryArgs>;
 
 /**
- * What a worker mutation may return to steer the loop.
+ * What a work query returns: a `batch` of work to process, or `idle` with an
+ * optional `timeoutMs` hint for when to look again.
  *
- * @typeParam QueryArgs - the args type of your work query.
+ * @typeParam Batch - the shape passed to your worker mutation.
  */
-export type WorkerResult<QueryArgs> = {
-  /**
-   * Delay in ms before the loop runs again. Defaults to running immediately
-   * (there may be more work). Return a larger value to back off, e.g. when
-   * you hit a rate limit.
-   */
-  runAfter?: number;
-  /**
-   * Updated args for the next call to your work query — e.g. to advance a
-   * cursor. Persists across iterations until changed again.
-   */
-  queryArgs?: QueryArgs;
-} | null | void;
+export type BatchResult<Batch> =
+  | { kind: "work"; batch: Batch }
+  | { kind: "idle"; timeoutMs?: number };
 
-/**
- * A handle to a context object that can run mutations.
- */
 export type RunMutationCtx = {
   runMutation: <Mutation extends FunctionReference<"mutation", "internal">>(
     mutation: Mutation,
@@ -55,25 +55,22 @@ export type WorkerOptions = {
    * queues backed by the same component. Defaults to "".
    */
   name?: string;
-  /**
-   * Default loop configuration, overridable per `ensureRunning` call.
-   */
-  config?: Partial<WorkerConfig>;
+  /** Default loop configuration, overridable per `ping` call. */
+  config?: Partial<Config>;
 };
 
 /**
  * Drives a "main loop" over work you insert into your own table.
  *
  * You provide:
- *  - a **work query** that returns the next batch of work (or `null` when the
- *    queue is empty). Its return type must match the worker mutation's args.
- *  - a **worker mutation** that processes that batch. It owns cleanup (e.g.
- *    deleting the rows it processed) and may return a {@link WorkerResult} to
- *    advance a cursor or back off.
+ *  - a **work query** (args validated by {@link vBatchQueryArgs}, returns
+ *    {@link vBatchResult}) that returns the next batch or `idle`, and
+ *  - a **worker mutation** that processes a batch and owns its cleanup. It may
+ *    return `{ debounceMs, timeoutMs }` to throttle the loop.
  *
- * After inserting work, call {@link Worker.ensureRunning}. The component runs
- * the loop, debounces bursts, polls during a cooldown window, and restarts the
- * loop if it dies — all without you scheduling anything yourself.
+ * After inserting work, call {@link Worker.ping}. The component runs the loop,
+ * debounces bursts, sleeps until the next due item, and restarts the loop if it
+ * dies — without you scheduling anything.
  *
  * @example
  * ```ts
@@ -83,10 +80,9 @@ export type WorkerOptions = {
  *   args: { task: v.string() },
  *   handler: async (ctx, { task }) => {
  *     await ctx.db.insert("tasks", { task });
- *     await worker.ensureRunning(ctx, {
+ *     await worker.ping(ctx, {
  *       workQuery: internal.tasks.getBatch,
  *       workerMutation: internal.tasks.processBatch,
- *       queryArgs: {},
  *     });
  *   },
  * });
@@ -99,47 +95,61 @@ export class Worker {
   ) {}
 
   /**
-   * Make sure the worker's loop is running. Idempotent and cheap to call on
-   * every insert: when the loop is already active it does no writes.
+   * Register-or-refresh the worker and make sure its loop is running. Carries
+   * the work query/mutation. Idempotent and cheap to call on every insert.
    */
-  async ensureRunning<
-    QueryArgs extends DefaultFunctionArgs,
-    Work extends DefaultFunctionArgs,
-  >(
+  async ping<Batch extends DefaultFunctionArgs>(
     ctx: RunMutationCtx,
     args: {
-      /** Returns the next batch of work, or `null` when there's nothing to do. */
-      workQuery: FunctionReference<"query", "internal", QueryArgs, Work | null>;
+      /** Returns the next batch of work, or `idle`. */
+      workQuery: FunctionReference<
+        "query",
+        "internal",
+        QueryArgs,
+        BatchResult<Batch>
+      >;
       /** Processes a batch returned by the work query. */
       workerMutation: FunctionReference<
         "mutation",
         "internal",
-        Work,
-        WorkerResult<QueryArgs>
+        Batch,
+        { debounceMs?: number; timeoutMs?: number } | null | void
       >;
-      /** Initial args for the work query (advanced via the mutation's result). */
-      queryArgs: QueryArgs;
       /** Worker name; defaults to the instance's configured name. */
       name?: string;
       /** Per-call config overrides. */
-      config?: Partial<WorkerConfig>;
+      config?: Partial<Config>;
     },
   ): Promise<void> {
     const [workQuery, workerMutation] = await Promise.all([
       createFunctionHandle(args.workQuery),
       createFunctionHandle(args.workerMutation),
     ]);
-    await ctx.runMutation(this.component.lib.ensureRunning, {
+    await ctx.runMutation(this.component.lib.ping, {
       name: this.nameFor(args.name),
       workQuery,
       workerMutation,
-      queryArgs: args.queryArgs,
       config: { ...this.options.config, ...args.config },
     });
   }
 
+  /**
+   * Resume an existing worker (e.g. after {@link Worker.stop}) using its stored
+   * query/mutation and config. No-op if it was never `ping`ed.
+   */
+  async start(ctx: RunMutationCtx, name?: string): Promise<void> {
+    await ctx.runMutation(this.component.lib.start, {
+      name: this.nameFor(name),
+    });
+  }
+
+  /** Stop the worker's loop and monitor. `start`/`ping` resumes it. */
+  async stop(ctx: RunMutationCtx, name?: string): Promise<void> {
+    await ctx.runMutation(this.component.lib.stop, { name: this.nameFor(name) });
+  }
+
   /** Get the current run status of the worker, or `null` if it's never run. */
-  async status(ctx: RunQueryCtx, name?: string): Promise<WorkerStatus | null> {
+  async status(ctx: RunQueryCtx, name?: string): Promise<Status | null> {
     return ctx.runQuery(this.component.lib.status, {
       name: this.nameFor(name),
     });

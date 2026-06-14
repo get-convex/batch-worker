@@ -2,7 +2,13 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { createLogger } from "./logging.js";
-import { type Config, DEFAULT_CONFIG } from "./shared.js";
+import {
+  type Config,
+  DEFAULT_CONFIG,
+  MONITOR_REFRESH_WITHIN_MS,
+  type RunState,
+  RUNNING_THRESHOLD_MS,
+} from "./shared.js";
 
 export async function getWorker(ctx: QueryCtx, name: string) {
   return ctx.db
@@ -18,32 +24,32 @@ export async function getWorkerState(ctx: QueryCtx, name: string) {
     .unique();
 }
 
+// ── Public entry points (ping / start / stop) ──────────────────────────────
+
 /**
- * Idempotently make sure the named worker exists and is processing work.
+ * Register-or-refresh a worker and make sure it's running. Carries the work
+ * query/mutation + config; creates the worker on first call. Call it right
+ * after inserting work.
  *
- * Cheap and OCC-friendly in the common case: when the loop is already active
- * it only reads the `workers` doc and returns. Call it right after inserting
- * work into your own table.
+ * Cheap and OCC-friendly: when the loop is already running it only reads the
+ * `workers` doc and returns.
  */
-export async function ensureRunning(
+export async function ping(
   ctx: MutationCtx,
   args: {
     name: string;
     workQuery: string;
     workerMutation: string;
-    queryArgs: unknown;
     config: Partial<Config>;
   },
 ): Promise<void> {
   const config: Config = { ...DEFAULT_CONFIG, ...args.config };
-  const console = createLogger(config.logLevel);
   const worker = await getWorker(ctx, args.name);
 
   if (!worker) {
     await ctx.db.insert("workerState", {
       name: args.name,
       generation: 0n,
-      queryArgs: args.queryArgs ?? {},
       lastWorkTs: 0,
       heartbeat: 0,
     });
@@ -54,98 +60,36 @@ export async function ensureRunning(
       config,
       state: { kind: "idle" },
     });
-    await kick(ctx, (await ctx.db.get("workers", workerId))!);
+    await startLoop(ctx, (await ctx.db.get("workers", workerId))!);
     return;
   }
 
-  if (worker.state.kind === "active") {
-    // A loop is already running (or polling/scheduled); it will pick up the
-    // newly-inserted work via its query. Crucially we don't write anything,
-    // so concurrent inserts don't OCC-conflict with each other or the loop.
-    console.debug(`[ensureRunning] "${args.name}" already active`);
-    return;
+  // Refresh handles/config only while idle — writing them while the loop runs
+  // would OCC-conflict with the per-insert read, and a running loop already
+  // has what it needs.
+  if (worker.state.kind === "idle") {
+    await ctx.db.patch("workers", worker._id, {
+      workQuery: args.workQuery,
+      workerMutation: args.workerMutation,
+      config,
+    });
   }
-
-  // Idle: refresh handles/config (the deployed code may have changed) and
-  // kick. Safe to write here because no loop is running to conflict with.
-  await ctx.db.patch("workers", worker._id, {
-    workQuery: args.workQuery,
-    workerMutation: args.workerMutation,
-    config,
-  });
-  await kick(ctx, (await ctx.db.get("workers", worker._id))!);
+  await wake(ctx, (await ctx.db.get("workers", worker._id))!);
 }
 
 /**
- * Transition the worker to active and schedule its loop after the configured
- * debounce, then make sure a monitor is watching it. Bumps the generation so
- * any stale scheduled loop exits. Use this from `ensureRunning`.
+ * Resume an existing worker (e.g. after `stop`) using its stored handles and
+ * config. No-ops if the worker was never created with `ping`.
  */
-export async function kick(
-  ctx: MutationCtx,
-  worker: Doc<"workers">,
-): Promise<void> {
-  await startLoop(ctx, worker);
-  await ensureMonitor(ctx, worker._id);
+export async function start(ctx: MutationCtx, name: string): Promise<void> {
+  const worker = await getWorker(ctx, name);
+  if (!worker) return;
+  await wake(ctx, worker);
 }
 
 /**
- * Schedule a fresh loop chain and mark the worker active. Does NOT touch the
- * monitor — the monitor restarts the loop with this and reschedules itself
- * separately (calling `ensureMonitor` from here would see the in-progress
- * monitor and skip rescheduling, silently halting monitoring).
- */
-export async function startLoop(
-  ctx: MutationCtx,
-  worker: Doc<"workers">,
-): Promise<void> {
-  const state = (await getWorkerState(ctx, worker.name))!;
-  const generation = state.generation + 1n;
-  const runnerId = await ctx.scheduler.runAfter(
-    worker.config.debounceMs,
-    internal.loop.loop,
-    { name: worker.name, generation },
-  );
-  await ctx.db.patch("workerState", state._id, {
-    generation,
-    runnerId,
-    heartbeat: Date.now(),
-  });
-  await ctx.db.patch("workers", worker._id, {
-    state: { kind: "active" },
-  });
-}
-
-/**
- * Make sure a monitor is scheduled for the worker. The monitor reschedules
- * itself while the worker is active, so this only schedules a new one when
- * none is alive.
- */
-export async function ensureMonitor(
-  ctx: MutationCtx,
-  workerId: Doc<"workers">["_id"],
-): Promise<void> {
-  const worker = (await ctx.db.get("workers", workerId))!;
-  if (worker.monitorId) {
-    const fn = await ctx.db.system.get(
-      "_scheduled_functions",
-      worker.monitorId,
-    );
-    if (fn && (fn.state.kind === "pending" || fn.state.kind === "inProgress")) {
-      return;
-    }
-  }
-  const monitorId = await ctx.scheduler.runAfter(
-    worker.config.monitorIntervalMs,
-    internal.monitor.monitor,
-    { name: worker.name },
-  );
-  await ctx.db.patch("workers", workerId, { monitorId });
-}
-
-/**
- * Stop the worker: cancel its loop and monitor and mark it idle. New work
- * (plus an `ensureRunning` call) will start it again.
+ * Stop the worker: cancel its loop and monitor and mark it idle. `start` or
+ * `ping` will resume it.
  */
 export async function stop(ctx: MutationCtx, name: string): Promise<void> {
   const worker = await getWorker(ctx, name);
@@ -155,13 +99,200 @@ export async function stop(ctx: MutationCtx, name: string): Promise<void> {
     await cancelIfPending(ctx, state.runnerId);
     await ctx.db.patch("workerState", state._id, { runnerId: undefined });
   }
-  if (worker.monitorId) {
-    await cancelIfPending(ctx, worker.monitorId);
+  await cancelMonitor(ctx, worker);
+  await ctx.db.patch("workers", worker._id, { state: { kind: "idle" } });
+}
+
+// ── Waking the loop ────────────────────────────────────────────────────────
+
+/**
+ * Decide whether a ping/start should do anything:
+ * - idle    → start a fresh loop.
+ * - running → no-op (work will be picked up imminently).
+ * - waiting → suppressed during the debounce window; otherwise interrupt and
+ *   run now (unless the loop is already about to run).
+ */
+async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
+  const console = createLogger(worker.config.logLevel);
+  const state = worker.state;
+  if (state.kind === "idle") {
+    await startLoop(ctx, worker);
+    return;
   }
-  await ctx.db.patch("workers", worker._id, {
-    state: { kind: "idle" },
-    monitorId: undefined,
+  if (state.kind === "running") {
+    console.debug(`[wake] "${worker.name}" running — no-op`);
+    return;
+  }
+  const now = Date.now();
+  if (now < state.debounceUntilMs) {
+    console.debug(`[wake] "${worker.name}" within debounce — no-op`);
+    return;
+  }
+  if (now >= state.runAtMs) {
+    console.debug(`[wake] "${worker.name}" about to run — no-op`);
+    return;
+  }
+  // Interrupt the wait and run now.
+  const ws = await getWorkerState(ctx, worker.name);
+  if (ws?.runnerId) await cancelIfPending(ctx, ws.runnerId);
+  console.debug(`[wake] "${worker.name}" interrupting wait`);
+  await startLoop(ctx, worker, 0);
+}
+
+// ── Scheduling the loop ────────────────────────────────────────────────────
+
+/**
+ * Start a fresh loop chain. Used by ping/start (debounced), the monitor
+ * (restart), and ping interrupts (delayMs = 0).
+ */
+export async function startLoop(
+  ctx: MutationCtx,
+  worker: Doc<"workers">,
+  delayMs: number = worker.config.debounceMs,
+): Promise<void> {
+  const now = Date.now();
+  const runState: RunState =
+    delayMs <= RUNNING_THRESHOLD_MS
+      ? { kind: "running" }
+      : { kind: "waiting", runAtMs: now + delayMs, debounceUntilMs: now };
+  await scheduleLoopRun(ctx, worker, { delayMs, runState });
+}
+
+/** Re-run the loop after `delayMs`, staying in the (ping-no-op) running state. */
+export async function continueRunning(
+  ctx: MutationCtx,
+  worker: Doc<"workers">,
+  delayMs: number,
+  lastWorkTs?: number,
+): Promise<void> {
+  await scheduleLoopRun(ctx, worker, {
+    delayMs,
+    runState: { kind: "running" },
+    lastWorkTs,
   });
+}
+
+/**
+ * Sleep until `now + timeoutMs`, ignoring pings until `now + debounceMs` and
+ * letting them interrupt afterward.
+ */
+export async function scheduleWaiting(
+  ctx: MutationCtx,
+  worker: Doc<"workers">,
+  debounceMs: number,
+  timeoutMs: number,
+  lastWorkTs?: number,
+): Promise<void> {
+  const now = Date.now();
+  await scheduleLoopRun(ctx, worker, {
+    delayMs: timeoutMs,
+    runState: {
+      kind: "waiting",
+      runAtMs: now + timeoutMs,
+      debounceUntilMs: now + debounceMs,
+    },
+    lastWorkTs,
+  });
+}
+
+/** Stop looping: mark idle and cancel the monitor. */
+export async function goIdle(
+  ctx: MutationCtx,
+  worker: Doc<"workers">,
+  state: Doc<"workerState">,
+): Promise<void> {
+  await ctx.db.patch("workerState", state._id, {
+    heartbeat: Date.now(),
+    runnerId: undefined,
+  });
+  await cancelMonitor(ctx, worker);
+  await ctx.db.patch("workers", worker._id, { state: { kind: "idle" } });
+}
+
+async function scheduleLoopRun(
+  ctx: MutationCtx,
+  worker: Doc<"workers">,
+  opts: { delayMs: number; runState: RunState; lastWorkTs?: number },
+): Promise<void> {
+  const state = (await getWorkerState(ctx, worker.name))!;
+  const generation = state.generation + 1n;
+  const runnerId = await ctx.scheduler.runAfter(
+    opts.delayMs,
+    internal.loop.loop,
+    { name: worker.name, generation },
+  );
+  await ctx.db.patch("workerState", state._id, {
+    generation,
+    runnerId,
+    heartbeat: Date.now(),
+    ...(opts.lastWorkTs !== undefined ? { lastWorkTs: opts.lastWorkTs } : {}),
+  });
+  await setRunState(ctx, worker, opts.runState);
+  await ensureMonitorBehind(ctx, worker._id, Date.now() + opts.delayMs);
+}
+
+/** Patch `workers.state` only when it actually changed, to avoid churn. */
+async function setRunState(
+  ctx: MutationCtx,
+  worker: Doc<"workers">,
+  next: RunState,
+): Promise<void> {
+  const cur = worker.state;
+  const unchanged =
+    cur.kind === next.kind &&
+    (next.kind !== "waiting" ||
+      (cur.kind === "waiting" &&
+        cur.runAtMs === next.runAtMs &&
+        cur.debounceUntilMs === next.debounceUntilMs));
+  if (!unchanged) {
+    await ctx.db.patch("workers", worker._id, { state: next });
+  }
+}
+
+// ── Monitor ────────────────────────────────────────────────────────────────
+
+/**
+ * Keep the monitor scheduled ~`monitorLagMs` after the loop's next run. Only
+ * reschedules when the monitor is missing or about to fire, so a healthy
+ * fast-looping worker pushes it back roughly once a minute rather than every
+ * iteration.
+ */
+export async function ensureMonitorBehind(
+  ctx: MutationCtx,
+  workerId: Id<"workers">,
+  loopRunAtMs: number,
+): Promise<void> {
+  const worker = (await ctx.db.get("workers", workerId))!;
+  const now = Date.now();
+  const close =
+    worker.monitorRunAtMs == null ||
+    worker.monitorRunAtMs <= now + MONITOR_REFRESH_WITHIN_MS;
+  if (worker.monitorId && !close) return;
+
+  if (worker.monitorId) await cancelIfPending(ctx, worker.monitorId);
+  const desiredAt = loopRunAtMs + worker.config.monitorLagMs;
+  const monitorId = await ctx.scheduler.runAfter(
+    Math.max(0, desiredAt - now),
+    internal.monitor.monitor,
+    { name: worker.name },
+  );
+  await ctx.db.patch("workers", workerId, {
+    monitorId,
+    monitorRunAtMs: desiredAt,
+  });
+}
+
+export async function cancelMonitor(
+  ctx: MutationCtx,
+  worker: Doc<"workers">,
+): Promise<void> {
+  if (worker.monitorId) await cancelIfPending(ctx, worker.monitorId);
+  if (worker.monitorId || worker.monitorRunAtMs != null) {
+    await ctx.db.patch("workers", worker._id, {
+      monitorId: undefined,
+      monitorRunAtMs: undefined,
+    });
+  }
 }
 
 async function cancelIfPending(

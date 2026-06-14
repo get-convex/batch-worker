@@ -1,48 +1,45 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
 import {
-  ensureRunning as ensureRunningHelper,
   getWorker,
+  getWorkerState,
+  ping as pingHelper,
+  start as startHelper,
   stop as stopHelper,
 } from "./kick.js";
-import { vConfig, vRunState } from "./shared.js";
+import { vConfig, vStatus } from "./shared.js";
 
 /**
  * The public component API. Apps normally call these through the `Worker`
  * client wrapper (see `@convex-dev/worker`) rather than directly.
  */
 
-export const ensureRunning = mutation({
+export const ping = mutation({
   args: {
     name: v.string(),
     // Function handles, created app-side with `createFunctionHandle`.
     workQuery: v.string(),
     workerMutation: v.string(),
-    queryArgs: v.optional(v.any()),
     config: v.optional(vConfig.partial()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await ensureRunningHelper(ctx, {
+    await pingHelper(ctx, {
       name: args.name,
       workQuery: args.workQuery,
       workerMutation: args.workerMutation,
-      queryArgs: args.queryArgs,
       config: args.config ?? {},
     });
     return null;
   },
 });
 
-export const status = query({
+export const start = mutation({
   args: { name: v.string() },
-  returns: v.union(v.null(), vRunState),
+  returns: v.null(),
   handler: async (ctx, args) => {
-    const worker = await getWorker(ctx, args.name);
-    if (!worker) return null;
-    return {
-      kind: worker.state.kind,
-    };
+    await startHelper(ctx, args.name);
+    return null;
   },
 });
 
@@ -52,5 +49,21 @@ export const stop = mutation({
   handler: async (ctx, args) => {
     await stopHelper(ctx, args.name);
     return null;
+  },
+});
+
+export const status = query({
+  args: { name: v.string() },
+  returns: v.union(v.null(), vStatus),
+  handler: async (ctx, args) => {
+    const worker = await getWorker(ctx, args.name);
+    if (!worker) return null;
+    const state = await getWorkerState(ctx, args.name);
+    return {
+      kind: worker.state.kind,
+      generation: state?.generation ?? 0n,
+      lastWorkTs: state?.lastWorkTs ?? 0,
+      heartbeat: state?.heartbeat ?? 0,
+    };
   },
 });
