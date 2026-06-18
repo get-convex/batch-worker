@@ -248,15 +248,20 @@ export async function ensureMonitored(
   const state = await ctx.db.get("workerState", worker.stateId);
   if (!state) return;
 
+  const lag = Math.max(
+    MONITOR_REFRESH_WITHIN_MS,
+    worker.config.monitorLagMs ?? MONITOR_LAG_MS,
+  );
+
   const now = Date.now();
+  // If the monitor lag is short, just use half of it.
+  const gracePeriod = Math.min(lag / 2, MONITOR_REFRESH_WITHIN_MS);
   const close =
-    state.monitorRunAtMs == null ||
-    state.monitorRunAtMs <= now + MONITOR_REFRESH_WITHIN_MS;
+    state.monitorRunAtMs == null || state.monitorRunAtMs <= now + gracePeriod;
   if (state.monitorId && !close) return;
 
   if (state.monitorId) await cancelIfPending(ctx, state.monitorId);
-  const desiredAt =
-    loopRunAtMs + (worker.config.monitorLagMs ?? MONITOR_LAG_MS);
+  const desiredAt = loopRunAtMs + lag;
   const monitorId = await ctx.scheduler.runAt(
     desiredAt,
     internal.monitor.monitor,
