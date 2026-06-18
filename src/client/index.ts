@@ -2,6 +2,10 @@ import {
   createFunctionHandle,
   type DefaultFunctionArgs,
   type FunctionReference,
+  type GenericActionCtx,
+  type GenericDataModel,
+  type GenericMutationCtx,
+  type GenericQueryCtx,
 } from "convex/server";
 import type { Infer } from "convex/values";
 import type { ComponentApi } from "../component/_generated/component.js";
@@ -24,19 +28,6 @@ export type { Config as WorkerConfig, Status as WorkerStatus };
 
 /** The args every work query receives — today just the worker's `name`. */
 export type QueryArgs = Infer<typeof vBatchQueryArgs>;
-
-export type RunMutationCtx = {
-  runMutation: <Mutation extends FunctionReference<"mutation", "internal">>(
-    mutation: Mutation,
-    args: Mutation["_args"],
-  ) => Promise<Mutation["_returnType"]>;
-};
-export type RunQueryCtx = {
-  runQuery: <Query extends FunctionReference<"query", "internal">>(
-    query: Query,
-    args: Query["_args"],
-  ) => Promise<Query["_returnType"]>;
-};
 
 export type WorkerComponent = ComponentApi;
 
@@ -90,7 +81,7 @@ export class BatchWorker {
    * the work query/mutation. Idempotent and cheap to call on every insert.
    */
   async ping<Batch extends DefaultFunctionArgs>(
-    ctx: RunMutationCtx,
+    ctx: MutationCtx | ActionCtx,
     args: {
       /** Returns the next batch of work, or `idle`. */
       workQuery: FunctionReference<
@@ -128,21 +119,24 @@ export class BatchWorker {
    * Resume an existing worker (e.g. after {@link BatchWorker.stop}) using its stored
    * query/mutation and config. No-op if it was never `ping`ed.
    */
-  async start(ctx: RunMutationCtx, name?: string): Promise<void> {
+  async start(ctx: MutationCtx | ActionCtx, name?: string): Promise<void> {
     await ctx.runMutation(this.component.lib.start, {
       name: this.nameFor(name),
     });
   }
 
   /** Stop the worker's loop and monitor. `start`/`ping` resumes it. */
-  async stop(ctx: RunMutationCtx, name?: string): Promise<void> {
+  async stop(ctx: MutationCtx | ActionCtx, name?: string): Promise<void> {
     await ctx.runMutation(this.component.lib.stop, {
       name: this.nameFor(name),
     });
   }
 
   /** Get the current run status of the worker, or `null` if it's never run. */
-  async status(ctx: RunQueryCtx, name?: string): Promise<Status | null> {
+  async status(
+    ctx: QueryCtx | MutationCtx | ActionCtx,
+    name?: string,
+  ): Promise<Status | null> {
     return ctx.runQuery(this.component.lib.status, {
       name: this.nameFor(name),
     });
@@ -152,3 +146,12 @@ export class BatchWorker {
     return name ?? this.options.name ?? "";
   }
 }
+type QueryCtx = Pick<GenericQueryCtx<GenericDataModel>, "runQuery">;
+type MutationCtx = Pick<
+  GenericMutationCtx<GenericDataModel>,
+  "runQuery" | "runMutation"
+>;
+type ActionCtx = Pick<
+  GenericActionCtx<GenericDataModel>,
+  "runQuery" | "runMutation" | "runAction"
+>;
