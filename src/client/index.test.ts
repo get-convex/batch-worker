@@ -20,7 +20,7 @@ const schema = defineSchema({
 });
 
 const worker = new BatchWorker(components.batchWorker, {
-  config: { debounceMs: 0, pollIntervalMs: 10, cooldownMs: 100 },
+  config: { debounceMs: 0 },
 });
 
 export const getBatch = internalQueryGeneric({
@@ -29,7 +29,8 @@ export const getBatch = internalQueryGeneric({
   handler: async (ctx) => {
     const items = await ctx.db.query("items").take(5);
     if (items.length === 0) {
-      return { kind: "idle" as const };
+      // Cool down quickly so the test's scheduled-function drain terminates.
+      return { kind: "idle" as const, cooldownMs: 100, pollIntervalMs: 10 };
     }
     return {
       kind: "work" as const,

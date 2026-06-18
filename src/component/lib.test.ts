@@ -14,7 +14,7 @@ import { api, internal } from "./_generated/api.js";
 import schema from "./schema.js";
 import { modules } from "./setup.test.js";
 import { getWorker, getOrCreateWorkerState, scheduleWaiting } from "./kick.js";
-import { DEFAULT_CONFIG, RUNNING_THRESHOLD_MS } from "./shared.js";
+import { RUNNING_THRESHOLD_MS } from "./shared.js";
 
 // Dummy function handles. These never get invoked in these tests because we
 // don't drive the scheduler here — the loop body is exercised end-to-end by
@@ -61,8 +61,8 @@ describe("worker component", () => {
       assert(worker);
       const state = await getOrCreateWorkerState(ctx, worker);
       assert(state.monitorRunAtMs);
-      // loop runs ~debounceMs out; monitor ~monitorLagMs (90s) beyond that.
-      expect(state.monitorRunAtMs).toBeGreaterThan(Date.now() + 80_000);
+      // loop runs ~debounceMs out; monitor ~monitorLagMs (60s) beyond that.
+      expect(state.monitorRunAtMs).toBeGreaterThan(Date.now() + 50_000);
     });
   });
 
@@ -112,7 +112,9 @@ describe("worker component", () => {
     assert(worker);
     const state = await t.run((ctx) => getOrCreateWorkerState(ctx, worker));
     expect(worker!.status.kind).toBe("running");
-    expect(state!.generation).toBe(2n);
+    // ping (gen 1) → stop (bumps to 2, invalidating the canceled runner) →
+    // start (bumps to 3).
+    expect(state!.generation).toBe(3n);
   });
 
   test("start is a no-op for an unknown worker", async () => {
@@ -133,61 +135,50 @@ describe("worker component", () => {
     expect(state!.generation).toBe(1n);
   });
 
-  test("ping interrupts a waiting worker once past its debounce", async () => {
+  test("ping interrupts a worker sleeping far in the future", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
-    // Force a waiting state whose debounce window has already elapsed.
+    // Put it to sleep well beyond RUNNING_THRESHOLD_MS (status → idle, runner
+    // pending far out).
     await t.run(async (ctx) => {
       const w = await getWorker(ctx, "");
       assert(w);
-      await scheduleWaiting(
-        ctx,
-        w,
-        DEFAULT_CONFIG.debounceMs + RUNNING_THRESHOLD_MS,
-        Date.now() - DEFAULT_CONFIG.debounceMs - 1,
-      );
+      await scheduleWaiting(ctx, w, 10 * RUNNING_THRESHOLD_MS);
     });
     const worker = await t.run((ctx) => getWorker(ctx, ""));
     assert(worker);
     expect(worker.status.kind).toBe("idle");
-    const before = await t.run(async (ctx) =>
-      getOrCreateWorkerState(ctx, worker),
-    );
+    const before = await t.run((ctx) => getOrCreateWorkerState(ctx, worker));
     expect(before!.runnerId).toBeDefined();
+
     await t.mutation(api.lib.start, { name: "" });
-    const after = await t.run(async (ctx) =>
-      getOrCreateWorkerState(ctx, worker),
-    );
+
+    const after = await t.run((ctx) => getOrCreateWorkerState(ctx, worker));
     const workerAfter = await t.run((ctx) => getWorker(ctx, ""));
     expect(workerAfter!.status.kind).toBe("running");
     expect(after!.generation > before!.generation).toBe(true);
+    expect(after!.runnerId).not.toBe(before!.runnerId);
   });
 
-  test("ping is suppressed during the debounce window", async () => {
+  test("ping is a no-op when the loop will run soon", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
+    // Sleep for less than RUNNING_THRESHOLD_MS — the loop is about to run, so a
+    // ping shouldn't disturb it.
     await t.run(async (ctx) => {
       const w = await getWorker(ctx, "");
       assert(w);
-      await scheduleWaiting(
-        ctx,
-        w,
-        DEFAULT_CONFIG.debounceMs + RUNNING_THRESHOLD_MS,
-        Date.now(),
-      );
+      await scheduleWaiting(ctx, w, RUNNING_THRESHOLD_MS / 2);
     });
-    const worker = await t.run((ctx) => getWorker(ctx, ""));
-    assert(worker);
-    expect(worker.status.kind).toBe("idle");
     const before = await t.run(async (ctx) =>
-      getOrCreateWorkerState(ctx, worker),
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
     );
+
     await t.mutation(api.lib.start, { name: "" });
+
     const after = await t.run(async (ctx) =>
       getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
     );
-    const workerAfter = await t.run((ctx) => getWorker(ctx, ""));
-    expect(workerAfter!.status.kind).toBe("idle");
     expect(after!.generation).toBe(before!.generation);
     expect(after!.runnerId).toBe(before!.runnerId);
   });

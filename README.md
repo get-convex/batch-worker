@@ -1,6 +1,6 @@
 # Batch Worker
 
-[![npm version](https://badge.fury.io/js/@example%2Fbatch-worker.svg)](https://badge.fury.io/js/@example%2Fbatch-worker)
+[![npm version](https://badge.fury.io/js/@convex-dev%2Fbatch-worker.svg)](https://badge.fury.io/js/@convex-dev/batch-worker)
 
 <!-- START: Include on https://convex.dev/components -->
 
@@ -17,8 +17,8 @@ After inserting work, call `worker.ping(...)`. The component takes care of the
 rest:
 
 - runs exactly one loop at a time, debouncing bursts so they batch together,
-- keeps the loop "warm" with a short polling cooldown so a trickle of new work
-  is picked up promptly,
+- keeps the loop "warm" with a polling cooldown (controlled by your query) so a
+  trickle of new work is picked up promptly,
 - uses snapshot reads while draining so concurrent inserts don't cause OCC
   retries, and confirms with a real read before going idle so nothing is lost,
 - goes idle when the queue drains, and restarts automatically the next time you
@@ -85,9 +85,10 @@ export const getBatch = internalQuery({
   handler: async (ctx) => {
     const events = await ctx.db.query("events").take(BATCH_SIZE);
     if (events.length === 0) {
+      // Cooldown/poll/timeout are returned here, not configured statically.
       return { kind: "idle" as const };
-      // Or, if you know when the next item is due:
-      // return { kind: "idle" as const, timeoutMs: 30_000 };
+      // e.g. poll every 250ms for 10s, then sleep until the next item is due:
+      // return { kind: "idle" as const, pollIntervalMs: 250, cooldownMs: 10_000, timeoutMs: 30_000 };
     }
     return { kind: "work" as const, batch: { ids: events.map((e) => e._id) } };
   },
@@ -117,25 +118,33 @@ processed, otherwise the next query will return them again.
 - **`start({ name })`** resumes an existing worker (e.g. after `stop`) using its
   stored query/mutation. No-ops if the worker was never `ping`ed.
 
-### Steering the loop from your worker mutation
+### Steering the loop dynamically
 
-Your worker mutation may return `{ debounceMs, timeoutMs }` to throttle the
-loop:
+Most of the loop's pacing is returned from your functions, not configured
+statically:
 
-```ts
-return {
-  // Don't run again — and ignore pings — for at least this long (debounce).
-  debounceMs: 30_000,
-  // Run again by this long from now at the latest. A ping after the debounce
-  // window but before the timeout interrupts and runs sooner. Defaults to
-  // `debounceMs` (a hard wait with no interruption — good for rate limits).
-  timeoutMs: 60_000,
-};
-```
+- **Your worker mutation** may return `{ debounceMs }` to throttle — the loop
+  won't run again (and ignores pings) for that long. Returning nothing re-runs
+  immediately to drain the rest.
 
-Similarly, when there's no work your query can return
-`{ kind: "idle", timeoutMs }` to sleep until the next item is due instead of
-polling — a ping still wakes it immediately.
+  ```ts
+  return { debounceMs: 30_000 }; // e.g. back off after hitting a rate limit
+  ```
+
+- **Your work query**, on `idle`, controls the cooldown and the eventual sleep:
+
+  ```ts
+  return {
+    kind: "idle" as const,
+    pollIntervalMs: 250, // re-check this often while cooling down
+    cooldownMs: 10_000, // keep polling this long after the last work
+    timeoutMs: 30_000, // then sleep at most this long (e.g. next item's ETA)
+  };
+  ```
+
+  After the cooldown, with no `timeoutMs` the loop goes fully idle (only a
+  `ping`/`start` wakes it); with one, it sleeps until then — and a `ping` wakes
+  it sooner.
 
 ### Multiple queues
 
@@ -152,26 +161,27 @@ await worker.ping(ctx, {
 
 ### Configuration
 
+The static config is small (most pacing is returned dynamically — see above).
 Defaults can be set on the `BatchWorker` and overridden per `ping` call:
 
 ```ts
 const worker = new BatchWorker(components.batchWorker, {
   config: {
-    debounceMs: 100, // wait before the first batch so a burst accumulates
-    pollIntervalMs: 250, // poll cadence while cooling down
-    cooldownMs: 10_000, // keep polling this long after the queue drains
+    debounceMs: 0, // wait before the first batch so a burst accumulates
     errorBackoffMs: 60_000, // wait this long to retry after the mutation throws
-    monitorLagMs: 90_000, // schedule the liveness monitor this long after the loop
+    monitorLagMs: 60_000, // schedule the liveness monitor this long after the loop
   },
 });
 ```
+
+Log level is set via the component's `LOG_LEVEL` env var (see Installation).
 
 ### Status & stopping
 
 ```ts
 // In a query:
 const status = await worker.status(ctx);
-// { kind: "idle" | "running" | "waiting", generation, lastWorkTs, heartbeat } | null
+// { kind: "idle" | "running" | "stopped" } | null
 
 // In a mutation:
 await worker.stop(ctx); // halt the loop; start()/ping() resumes it
@@ -199,12 +209,14 @@ Run `npm run dev:frontend` to interact with it through a Vite app.
 | `workers`     | `ping`/`start`/`loop` (transitions) | `ping`/`start`, monitor |
 | `workerState` | `loop` (every iteration)            | `loop`, monitor         |
 
-The high-churn loop state lives in `workerState`, separate from the rarely-
-written `workers` doc (which holds the run-state: `idle` / `running` /
-`waiting`). That lets `ping`/`start` — which you call on every insert — read
-`workers` and return without conflicting (OCC) with the fast-looping loop. A
-monotonic `generation` (in `workerState`) guarantees only one loop chain runs at
-a time: a superseded loop sees a mismatched generation and exits. The liveness
-monitor is scheduled ~`monitorLagMs` _after_ the loop's next run and pushed back
-as the loop keeps running, so it only fires (and restarts the loop) if the loop
-actually died.
+The high-churn loop state lives in `workerState` (generation, heartbeat, the
+scheduled runner, and the monitor), separate from the rarely-written `workers`
+doc (which holds the handles, config, and run-status: `idle` / `running` /
+`stopped`, plus a pointer to its `workerState`). That lets `ping`/`start` —
+which you call on every insert — read `workers` and return without conflicting
+(OCC) with the fast-looping loop. A monotonic `generation` (in `workerState`)
+guarantees only one loop chain runs at a time: a superseded loop sees a
+mismatched generation and exits. `workerState` is looked up by id and
+re-created if it's ever missing. The liveness monitor is scheduled
+~`monitorLagMs` _after_ the loop's next run and pushed back as the loop keeps
+running, so it only fires (and restarts the loop) if the loop actually died.
