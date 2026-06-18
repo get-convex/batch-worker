@@ -15,7 +15,6 @@ import {
   scheduleWaiting,
 } from "./kick.js";
 import {
-  DEFAULT_CONFIG,
   RUNNING_THRESHOLD_MS,
   type BatchQueryArgs,
   type BatchResult,
@@ -56,7 +55,6 @@ export const loop = internalMutation({
       return;
     }
 
-    const config = { ...DEFAULT_CONFIG, ...worker.config };
     const now = Date.now();
     const queryArgs: BatchQueryArgs = { name };
     const queryRef = worker.workQuery as unknown as FunctionHandle<
@@ -66,8 +64,8 @@ export const loop = internalMutation({
     >;
 
     // Snapshot read: no OCC dependency, so concurrent inserts while we drain
-    // don't force this loop to retry.
-    // TODO: catch error and retry after a delay
+    // don't force this loop to retry. If the query or worker mutation throws,
+    // this loop fails (and doesn't reschedule) — the monitor restarts it.
     const result = (await runSnapshotQuery(
       queryRef,
       queryArgs,
@@ -75,24 +73,14 @@ export const loop = internalMutation({
 
     // ── There's work: run the worker mutation, then reschedule. ──
     if (result && "batch" in result) {
-      try {
-        const mutationRef = worker.workerMutation as unknown as FunctionHandle<
-          "mutation",
-          any,
-          WorkerResult
-        >;
-        const ret = await ctx.runMutation(mutationRef, result.batch);
-        const debounceMs = ret?.debounceMs ?? 0;
-        await continueRunning(ctx, worker, debounceMs, now);
-      } catch (e) {
-        console.error(`[loop] "${name}" worker mutation threw:`, e);
-        console.event("error", {
-          name,
-          error: e instanceof Error ? e.message : String(e),
-        });
-        // Retry after a max delay; keep lastWorkTs so we stay warm.
-        await scheduleWaiting(ctx, worker, config.errorBackoffMs);
-      }
+      const mutationRef = worker.workerMutation as unknown as FunctionHandle<
+        "mutation",
+        any,
+        WorkerResult
+      >;
+      const ret = await ctx.runMutation(mutationRef, result.batch);
+      const debounceMs = ret?.debounceMs ?? 0;
+      await continueRunning(ctx, worker, debounceMs, now);
       return;
     }
 

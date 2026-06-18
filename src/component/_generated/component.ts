@@ -30,7 +30,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           config?: {
             debounceMs?: number;
-            errorBackoffMs?: number;
             monitorLagMs?: number;
           };
           name: string;

@@ -78,7 +78,6 @@ export async function ping(
     args.workerMutation !== worker.workerMutation ||
     (args.config &&
       (args.config.debounceMs !== worker.config.debounceMs ||
-        args.config.errorBackoffMs !== worker.config.errorBackoffMs ||
         args.config.monitorLagMs !== worker.config.monitorLagMs))
   ) {
     worker.workQuery = args.workQuery;

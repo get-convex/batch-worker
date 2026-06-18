@@ -26,14 +26,10 @@ export const vConfig = v.object({
    */
   debounceMs: v.number(),
   /**
-   * How long to wait before re-running the loop after the worker mutation
-   * throws. The loop keeps retrying (and logging) until the code is fixed.
-   */
-  errorBackoffMs: v.number(),
-  /**
    * How long after the loop's scheduled run the monitor is scheduled. The
    * monitor restarts the loop if it didn't run (and push the monitor back) by
-   * then.
+   * then — this is also the effective retry cadence when the work query or
+   * worker mutation throws.
    */
   monitorLagMs: v.number(),
 });
@@ -41,7 +37,6 @@ export type Config = Infer<typeof vConfig>;
 
 export const DEFAULT_CONFIG: Config = {
   debounceMs: 0,
-  errorBackoffMs: 1 * MINUTE,
   monitorLagMs: MONITOR_LAG_MS,
 };
 
