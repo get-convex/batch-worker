@@ -1,6 +1,6 @@
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { env, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { createLogger } from "./logging.js";
 import {
   type Config,
@@ -113,7 +113,7 @@ export async function stop(ctx: MutationCtx, name: string): Promise<void> {
  *   run now (unless the loop is already about to run).
  */
 async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
-  const console = createLogger(worker.config.logLevel);
+  const console = createLogger(env.LOG_LEVEL);
   const state = worker.state;
   if (state.kind === "idle") {
     await startLoop(ctx, worker);

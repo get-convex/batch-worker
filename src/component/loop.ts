@@ -1,6 +1,10 @@
 import { v, type Value } from "convex/values";
 import type { FunctionHandle } from "convex/server";
-import { internalMutation, type MutationCtx } from "./_generated/server.js";
+import {
+  env,
+  internalMutation,
+  type MutationCtx,
+} from "./_generated/server.js";
 import { runSnapshotQuery } from "./future.js";
 import { createLogger } from "./logging.js";
 import {
@@ -38,8 +42,11 @@ export const loop = internalMutation({
   handler: async (ctx, { name, generation }) => {
     const worker = await getWorker(ctx, name);
     const state = await getWorkerState(ctx, name);
-    if (!worker || !state) return; // worker was deleted
-    const console = createLogger(worker.config.logLevel);
+    const console = createLogger(env.LOG_LEVEL);
+    if (!worker || !state) {
+      console.debug(`[loop] "${name}" worker not found or state missing`);
+      return; // worker was deleted
+    }
 
     if (state.generation !== generation) {
       console.debug(

@@ -44,7 +44,7 @@ import { defineApp } from "convex/server";
 import batchWorker from "@convex-dev/batch-worker/convex.config.js";
 
 const app = defineApp();
-app.use(batchWorker);
+app.use(batchWorker, { env: { LOG_LEVEL: "REPORT" } });
 
 export default app;
 ```
@@ -162,7 +162,6 @@ const worker = new BatchWorker(components.batchWorker, {
     cooldownMs: 10_000, // keep polling this long after the queue drains
     errorBackoffMs: 60_000, // wait this long to retry after the mutation throws
     monitorLagMs: 90_000, // schedule the liveness monitor this long after the loop
-    logLevel: "REPORT",
   },
 });
 ```

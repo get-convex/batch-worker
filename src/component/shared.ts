@@ -1,5 +1,4 @@
 import { v, type Infer, type Validator } from "convex/values";
-import { logLevel, DEFAULT_LOG_LEVEL } from "./logging.js";
 
 export const MS = 1;
 export const SECOND = 1000 * MS;
@@ -46,7 +45,6 @@ export const vConfig = v.object({
    * then.
    */
   monitorLagMs: v.number(),
-  logLevel,
 });
 export type Config = Infer<typeof vConfig>;
 
@@ -56,7 +54,6 @@ export const DEFAULT_CONFIG: Config = {
   cooldownMs: 10 * SECOND,
   errorBackoffMs: 1 * MINUTE,
   monitorLagMs: MONITOR_LAG_MS,
-  logLevel: DEFAULT_LOG_LEVEL,
 };
 
 /**

@@ -1,6 +1,10 @@
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel.js";
-import { internalMutation, type MutationCtx } from "./_generated/server.js";
+import {
+  env,
+  internalMutation,
+  type MutationCtx,
+} from "./_generated/server.js";
 import { createLogger } from "./logging.js";
 import {
   cancelMonitor,
@@ -22,9 +26,11 @@ export const monitor = internalMutation({
   args: { name: v.string() },
   handler: async (ctx, { name }) => {
     const worker = await getWorker(ctx, name);
-    if (!worker) return; // worker was deleted
-
-    const console = createLogger(worker.config.logLevel);
+    const console = createLogger(env.LOG_LEVEL);
+    if (!worker) {
+      console.debug(`[monitor] "${name}" not found, bailing`);
+      return;
+    }
 
     if (worker.state.kind === "idle") {
       await cancelMonitor(ctx, worker);

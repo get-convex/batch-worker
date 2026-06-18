@@ -18,7 +18,6 @@ export {
   type BatchQueryArgs,
   type WorkerResult,
 } from "../component/shared.js";
-export { logLevel as vLogLevel, type LogLevel } from "../component/logging.js";
 export type { Config as WorkerConfig, Status as WorkerStatus };
 
 /** The args every work query receives — today just the worker's `name`. */

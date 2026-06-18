@@ -32,7 +32,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             cooldownMs?: number;
             debounceMs?: number;
             errorBackoffMs?: number;
-            logLevel?: "DEBUG" | "TRACE" | "INFO" | "REPORT" | "WARN" | "ERROR";
             monitorLagMs?: number;
             pollIntervalMs?: number;
           };
