@@ -1,7 +1,7 @@
 import { defineApp } from "convex/server";
-import worker from "@convex-dev/worker/convex.config.js";
+import batchWorker from "@convex-dev/batch-worker/convex.config.js";
 
 const app = defineApp();
-app.use(worker);
+app.use(batchWorker);
 
 export default app;

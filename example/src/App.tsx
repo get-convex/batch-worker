@@ -13,7 +13,7 @@ function App() {
 
   return (
     <>
-      <h1>Worker component demo</h1>
+      <h1>Batch Worker demo</h1>
       <div className="card">
         <p style={{ lineHeight: 1.6 }}>
           Each event you add is inserted into a queue table. After inserting we

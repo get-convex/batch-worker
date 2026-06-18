@@ -1,6 +1,6 @@
-# Convex Worker
+# Batch Worker
 
-[![npm version](https://badge.fury.io/js/@convex-dev%2Fworker.svg)](https://badge.fury.io/js/@convex-dev/worker)
+[![npm version](https://badge.fury.io/js/@example%2Fbatch-worker.svg)](https://badge.fury.io/js/@example%2Fbatch-worker)
 
 <!-- START: Include on https://convex.dev/components -->
 
@@ -31,7 +31,7 @@ This is the pattern behind components like
 your own "process a queue" components on top of it.
 
 Found a bug? Feature request?
-[File it here](https://github.com/get-convex/worker/issues).
+[File it here](https://github.com/get-convex/batch-worker/issues).
 
 ## Installation
 
@@ -41,10 +41,10 @@ component by calling `use`:
 ```ts
 // convex/convex.config.ts
 import { defineApp } from "convex/server";
-import worker from "@convex-dev/worker/convex.config.js";
+import batchWorker from "@convex-dev/batch-worker/convex.config.js";
 
 const app = defineApp();
-app.use(worker);
+app.use(batchWorker);
 
 export default app;
 ```
@@ -58,11 +58,11 @@ args.
 
 ```ts
 import { v } from "convex/values";
-import { Worker, vBatchQueryArgs, vBatchResult } from "@convex-dev/worker";
+import { BatchWorker, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api";
 import { internalMutation, internalQuery, mutation } from "./_generated/server";
 
-const worker = new Worker(components.worker);
+const worker = new BatchWorker(components.batchWorker);
 
 const BATCH_SIZE = 10;
 
@@ -152,10 +152,10 @@ await worker.ping(ctx, {
 
 ### Configuration
 
-Defaults can be set on the `Worker` and overridden per `ping` call:
+Defaults can be set on the `BatchWorker` and overridden per `ping` call:
 
 ```ts
-const worker = new Worker(components.worker, {
+const worker = new BatchWorker(components.batchWorker, {
   config: {
     debounceMs: 100, // wait before the first batch so a burst accumulates
     pollIntervalMs: 250, // poll cadence while cooling down

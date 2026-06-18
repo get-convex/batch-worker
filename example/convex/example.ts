@@ -1,5 +1,9 @@
 import { v } from "convex/values";
-import { Worker, vBatchQueryArgs, vBatchResult } from "@convex-dev/worker";
+import {
+  BatchWorker,
+  vBatchQueryArgs,
+  vBatchResult,
+} from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -10,7 +14,7 @@ import {
 
 // One worker instance per component. Use distinct `name`s if you want several
 // independent queues backed by the same component.
-const worker = new Worker(components.worker);
+const worker = new BatchWorker(components.batchWorker);
 
 const BATCH_SIZE = 10;
 

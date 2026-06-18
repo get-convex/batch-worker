@@ -1,3 +1,3 @@
 import { defineComponent } from "convex/server";
 
-export default defineComponent("worker");
+export default defineComponent("batchWorker");

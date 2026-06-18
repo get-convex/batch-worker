@@ -1,5 +1,9 @@
 import { v } from "convex/values";
-import { Worker, vBatchQueryArgs, vBatchResult } from "@convex-dev/worker";
+import {
+  BatchWorker,
+  vBatchQueryArgs,
+  vBatchResult,
+} from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -10,7 +14,7 @@ import {
 
 // Instrumented worker used by e2e.mjs to measure performance. Kept separate
 // from the README example (different worker `name`) so it doesn't interfere.
-const worker = new Worker(components.worker, { name: "e2e" });
+const worker = new BatchWorker(components.batchWorker, { name: "e2e" });
 
 const BATCH_SIZE = 25;
 
@@ -22,7 +26,7 @@ export const reset = mutation({
       const docs = await ctx.db.query(table).collect();
       for (const d of docs) await ctx.db.delete(table, d._id);
     }
-    await ctx.runMutation(components.worker.lib.stop, { name: "e2e" });
+    await ctx.runMutation(components.batchWorker.lib.stop, { name: "e2e" });
   },
 });
 

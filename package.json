@@ -1,10 +1,10 @@
 {
-  "name": "@convex-dev/worker",
-  "description": "A worker component for Convex.",
-  "repository": "github:get-convex/worker",
-  "homepage": "https://github.com/get-convex/worker#readme",
+  "name": "@convex-dev/batch-worker",
+  "description": "A batch worker component for Convex.",
+  "repository": "github:get-convex/batch-worker",
+  "homepage": "https://github.com/get-convex/batch-worker#readme",
   "bugs": {
-    "url": "https://github.com/get-convex/worker/issues"
+    "url": "https://github.com/get-convex/batch-worker/issues"
   },
   "version": "0.1.1-alpha.0",
   "license": "Apache-2.0",

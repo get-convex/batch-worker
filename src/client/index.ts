@@ -68,13 +68,13 @@ export type WorkerOptions = {
  *  - a **worker mutation** that processes a batch and owns its cleanup. It may
  *    return `{ debounceMs, timeoutMs }` to throttle the loop.
  *
- * After inserting work, call {@link Worker.ping}. The component runs the loop,
+ * After inserting work, call {@link BatchWorker.ping}. The component runs the loop,
  * debounces bursts, sleeps until the next due item, and restarts the loop if it
  * dies — without you scheduling anything.
  *
  * @example
  * ```ts
- * const worker = new Worker(components.worker);
+ * const worker = new BatchWorker(components.batchWorker);
  *
  * export const enqueue = mutation({
  *   args: { task: v.string() },
@@ -88,7 +88,7 @@ export type WorkerOptions = {
  * });
  * ```
  */
-export class Worker {
+export class BatchWorker {
   constructor(
     public component: WorkerComponent,
     public options: WorkerOptions = {},
@@ -134,7 +134,7 @@ export class Worker {
   }
 
   /**
-   * Resume an existing worker (e.g. after {@link Worker.stop}) using its stored
+   * Resume an existing worker (e.g. after {@link BatchWorker.stop}) using its stored
    * query/mutation and config. No-op if it was never `ping`ed.
    */
   async start(ctx: RunMutationCtx, name?: string): Promise<void> {

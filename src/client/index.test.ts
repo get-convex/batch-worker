@@ -12,14 +12,14 @@ import {
   mutationGeneric,
   queryGeneric,
 } from "convex/server";
-import { Worker, vBatchQueryArgs, vBatchResult } from "./index.js";
+import { BatchWorker, vBatchQueryArgs, vBatchResult } from "./index.js";
 import { components, initConvexTest } from "./setup.test.js";
 
 const schema = defineSchema({
   items: defineTable({ value: v.number() }),
 });
 
-const worker = new Worker(components.worker, {
+const worker = new BatchWorker(components.batchWorker, {
   config: { debounceMs: 0, pollIntervalMs: 10, cooldownMs: 100 },
 });
 
