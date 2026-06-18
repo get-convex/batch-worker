@@ -18,7 +18,11 @@ const worker = new BatchWorker(components.batchWorker, { name: "e2e" });
 
 const BATCH_SIZE = 25;
 
-/** Clear all e2e state and stop the worker so each scenario starts cold. */
+/**
+ * Clear all e2e state between scenarios. We don't `stop` the worker — it drains
+ * to idle on its own, and the next `enqueue` (a ping) resumes it. (`stop` would
+ * leave it `stopped`, which only `start` — not `ping` — resumes.)
+ */
 export const reset = mutation({
   args: {},
   handler: async (ctx) => {
@@ -26,7 +30,6 @@ export const reset = mutation({
       const docs = await ctx.db.query(table).collect();
       for (const d of docs) await ctx.db.delete(table, d._id);
     }
-    await ctx.runMutation(components.batchWorker.lib.stop, { name: "e2e" });
   },
 });
 
@@ -104,4 +107,14 @@ export const pending = query({
 export const status = query({
   args: {},
   handler: async (ctx) => worker.status(ctx),
+});
+
+export const start = mutation({
+  args: {},
+  handler: async (ctx) => worker.start(ctx),
+});
+
+export const stop = mutation({
+  args: {},
+  handler: async (ctx) => worker.stop(ctx),
 });

@@ -135,15 +135,16 @@ Similarly, when there's no work your query can return
 ```ts
 return {
   kind: "idle",
-  // Run again by this long from now at the latest. A ping after the debounce
-  // window but before the timeout interrupts and runs sooner. Defaults to
-  // `debounceMs` (a hard wait with no interruption — good for rate limits).
-  timeoutMs: 60_000,
-  // Keep polling this long before transitioning to idel
+  // Keep polling this long before transitioning to idle.
   cooldownMs: 10_000,
   // How often to poll while cooling down.
   pollIntervalMs: 250,
-````
+  // After cooling down, wake again after at most this long even if no ping
+  // arrives. Measured from this query response, so re-run it each query if you
+  // want it to track a fixed deadline. A ping still wakes it sooner.
+  timeoutMs: 60_000,
+};
+```
 
 ### Multiple queues
 
@@ -166,9 +167,10 @@ Defaults can be set on the `BatchWorker` and overridden per `ping` call:
 const worker = new BatchWorker(components.batchWorker, {
   config: {
     debounceMs: 100, // wait before the first batch so a burst accumulates
-    // wait this long to retry after the mutation throws
-    errorBackoffMs: 60_000,
-    // schedule the liveness monitor this long after the loop. Default is 1 minute. Minimum is 10 seconds.
+    // Schedule the liveness monitor this long after the loop's next run.
+    // Default 1 minute, minimum 10 seconds. Also the retry cadence if your
+    // work query or worker mutation throws (the loop dies; the monitor restarts
+    // it).
     monitorLagMs: 15_000,
   },
 });
@@ -184,7 +186,7 @@ const status = await worker.status(ctx);
 // { kind: "idle" | "running" | "stopped" } | null
 
 // In a mutation:
-await worker.stop(ctx); // halt the loop; start()/ping() resumes it
+await worker.stop(ctx); // halt the loop; only start() resumes it (ping won't)
 ```
 
 See the full working example in [example.ts](./example/convex/example.ts).
