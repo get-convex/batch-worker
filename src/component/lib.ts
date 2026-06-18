@@ -23,33 +23,25 @@ export const ping = mutation({
     config: v.optional(vConfig.partial()),
   },
   returns: v.null(),
-  handler: async (ctx, args) => {
-    await pingHelper(ctx, {
+  handler: async (ctx, args) =>
+    pingHelper(ctx, {
       name: args.name,
       workQuery: args.workQuery,
       workerMutation: args.workerMutation,
       config: args.config ?? {},
-    });
-    return null;
-  },
+    }),
 });
 
 export const start = mutation({
   args: { name: v.string() },
   returns: v.null(),
-  handler: async (ctx, args) => {
-    await startHelper(ctx, args.name);
-    return null;
-  },
+  handler: async (ctx, args) => startHelper(ctx, args.name),
 });
 
 export const stop = mutation({
   args: { name: v.string() },
   returns: v.null(),
-  handler: async (ctx, args) => {
-    await stopHelper(ctx, args.name);
-    return null;
-  },
+  handler: async (ctx, args) => stopHelper(ctx, args.name),
 });
 
 export const status = query({
