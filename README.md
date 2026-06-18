@@ -5,20 +5,20 @@
 <!-- START: Include on https://convex.dev/components -->
 
 Run a single background "main loop" over work you insert into your own table —
-without scheduling, debouncing, or recovery boilerplate.
+with scheduling, debouncing, and recovery built in.
 
 You bring two functions:
 
-- a **work query** that returns the next batch of work, or `idle` when the queue
-  is empty (optionally with a `timeoutMs` hint for when to look again), and
-- a **worker mutation** that processes that batch.
+- A **work query** that returns the next batch of work, or explicitly go idle.
+- A **worker mutation** that processes that batch.
 
 After inserting work, call `worker.ping(...)`. The component takes care of the
 rest:
 
-- runs exactly one loop at a time, debouncing bursts so they batch together,
-- keeps the loop "warm" with a polling cooldown (controlled by your query) so a
-  trickle of new work is picked up promptly,
+- Runs exactly one loop at a time per named Worker.
+- Supports debouncing bursts so they batch together.
+- Keeps the loop "warm" with a short polling cooldown so a trickle of new work
+  does not thrash the running status.
 - uses snapshot reads while draining so concurrent inserts don't cause OCC
   retries, and confirms with a real read before going idle so nothing is lost,
 - goes idle when the queue drains, and restarts automatically the next time you
@@ -85,10 +85,9 @@ export const getBatch = internalQuery({
   handler: async (ctx) => {
     const events = await ctx.db.query("events").take(BATCH_SIZE);
     if (events.length === 0) {
-      // Cooldown/poll/timeout are returned here, not configured statically.
       return { kind: "idle" as const };
-      // e.g. poll every 250ms for 10s, then sleep until the next item is due:
-      // return { kind: "idle" as const, pollIntervalMs: 250, cooldownMs: 10_000, timeoutMs: 30_000 };
+      // Or, if you know when the next item is due:
+      // return { kind: "idle" as const, timeoutMs: 30_000 };
     }
     return { kind: "work" as const, batch: { ids: events.map((e) => e._id) } };
   },
@@ -114,37 +113,37 @@ processed, otherwise the next query will return them again.
 ### `ping` vs `start`
 
 - **`ping`** carries the query/mutation + config. It creates the worker on first
-  call and resumes it thereafter — call it right after inserting work.
-- **`start({ name })`** resumes an existing worker (e.g. after `stop`) using its
-  stored query/mutation. No-ops if the worker was never `ping`ed.
+  call and resumes an idle worker thereafter — call it right after inserting work. No-ops if the worker is stopped.
+- **`start({ name })`** resumes a stopped worker (e.g. after `stop`) using its
+  stored query/mutation. No-ops if the worker was never `ping`ed. Not necessary unless `stop` was called explicitly.
 
 ### Steering the loop dynamically
 
-Most of the loop's pacing is returned from your functions, not configured
-statically:
+Your worker mutation may return `{ debounceMs }` to throttle the
+loop:
 
-- **Your worker mutation** may return `{ debounceMs }` to throttle — the loop
-  won't run again (and ignores pings) for that long. Returning nothing re-runs
-  immediately to drain the rest.
+```ts
+return {
+  // Don't run again — and ignore pings — for at least this long (debounce).
+  debounceMs: 30_000,
+};
+```
 
-  ```ts
-  return { debounceMs: 30_000 }; // e.g. back off after hitting a rate limit
-  ```
+Similarly, when there's no work your query can return
+`{ kind: "idle", timeoutMs }` to ensure it wakes up after some time even if `ping` is not called. A ping still wakes it immediately.
 
-- **Your work query**, on `idle`, controls the cooldown and the eventual sleep:
-
-  ```ts
-  return {
-    kind: "idle" as const,
-    pollIntervalMs: 250, // re-check this often while cooling down
-    cooldownMs: 10_000, // keep polling this long after the last work
-    timeoutMs: 30_000, // then sleep at most this long (e.g. next item's ETA)
-  };
-  ```
-
-  After the cooldown, with no `timeoutMs` the loop goes fully idle (only a
-  `ping`/`start` wakes it); with one, it sleeps until then — and a `ping` wakes
-  it sooner.
+```ts
+return {
+  kind: "idle",
+  // Run again by this long from now at the latest. A ping after the debounce
+  // window but before the timeout interrupts and runs sooner. Defaults to
+  // `debounceMs` (a hard wait with no interruption — good for rate limits).
+  timeoutMs: 60_000,
+  // Keep polling this long before transitioning to idel
+  cooldownMs: 10_000,
+  // How often to poll while cooling down.
+  pollIntervalMs: 250,
+````
 
 ### Multiple queues
 
@@ -161,15 +160,16 @@ await worker.ping(ctx, {
 
 ### Configuration
 
-The static config is small (most pacing is returned dynamically — see above).
 Defaults can be set on the `BatchWorker` and overridden per `ping` call:
 
 ```ts
 const worker = new BatchWorker(components.batchWorker, {
   config: {
-    debounceMs: 0, // wait before the first batch so a burst accumulates
-    errorBackoffMs: 60_000, // wait this long to retry after the mutation throws
-    monitorLagMs: 60_000, // schedule the liveness monitor this long after the loop
+    debounceMs: 100, // wait before the first batch so a burst accumulates
+    // wait this long to retry after the mutation throws
+    errorBackoffMs: 60_000,
+    // schedule the liveness monitor this long after the loop. Default is 1 minute. Minimum is 10 seconds.
+    monitorLagMs: 15_000,
   },
 });
 ```
