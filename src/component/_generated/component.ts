@@ -51,7 +51,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         { name: string },
-        null | { kind: "idle" | "running" | "waiting"; lastWorkTs: number },
+        null | { kind: "idle" } | { kind: "running" } | { kind: "stopped" },
         Name
       >;
       stop: FunctionReference<

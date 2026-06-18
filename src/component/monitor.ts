@@ -1,18 +1,13 @@
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel.js";
-import {
-  env,
-  internalMutation,
-  type MutationCtx,
-} from "./_generated/server.js";
-import { createLogger } from "./logging.js";
+import { env, internalMutation } from "./_generated/server.js";
 import {
   cancelMonitor,
-  ensureMonitorBehind,
+  continueRunning,
+  ensureMonitored,
+  getOrCreateWorkerState,
   getWorker,
-  getWorkerState,
-  startLoop,
 } from "./kick.js";
+import { createLogger } from "./logging.js";
 
 /**
  * Liveness watchdog. Scheduled ~`monitorLagMs` after the loop's next run by
@@ -32,36 +27,25 @@ export const monitor = internalMutation({
       return;
     }
 
-    if (worker.state.kind === "idle") {
-      await cancelMonitor(ctx, worker);
+    const state = await getOrCreateWorkerState(ctx, worker);
+    if (worker.status.kind === "idle") {
+      await cancelMonitor(ctx, state);
       console.debug(`[monitor] "${name}" idle, stopping`);
       return;
     }
 
-    const state = await getWorkerState(ctx, name);
-    if (await isLoopDead(ctx, state?.runnerId)) {
+    const loop =
+      state?.runnerId &&
+      (await ctx.db.system.get("_scheduled_functions", state?.runnerId));
+    if (loop?.state.kind !== "pending") {
       console.error(`[monitor] "${name}" loop is not running — restarting`);
       console.event("restart", { name });
-      // startLoop schedules a fresh runner and re-arms the monitor behind it.
-      await startLoop(ctx, worker, 0);
+      await continueRunning(ctx, worker, 0);
       return;
     }
 
     // Loop is alive (scheduled or running) but we fired anyway — re-arm behind
     // its next run so we keep trailing it.
-    const loopRunAtMs =
-      worker.state.kind === "waiting" ? worker.state.runAtMs : Date.now();
-    await ensureMonitorBehind(ctx, worker._id, loopRunAtMs);
+    await ensureMonitored(ctx, worker, loop.scheduledTime);
   },
 });
-
-async function isLoopDead(
-  ctx: MutationCtx,
-  runnerId: Id<"_scheduled_functions"> | undefined,
-): Promise<boolean> {
-  if (!runnerId) return true;
-  const fn = await ctx.db.system.get("_scheduled_functions", runnerId);
-  if (!fn) return true;
-  // pending / inProgress → scheduled or running: healthy.
-  return fn.state.kind !== "pending" && fn.state.kind !== "inProgress";
-}

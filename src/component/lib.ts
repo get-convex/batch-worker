@@ -2,7 +2,6 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
 import {
   getWorker,
-  getWorkerState,
   ping as pingHelper,
   start as startHelper,
   stop as stopHelper,
@@ -23,13 +22,7 @@ export const ping = mutation({
     config: v.optional(vConfig.partial()),
   },
   returns: v.null(),
-  handler: async (ctx, args) =>
-    pingHelper(ctx, {
-      name: args.name,
-      workQuery: args.workQuery,
-      workerMutation: args.workerMutation,
-      config: args.config ?? {},
-    }),
+  handler: async (ctx, args) => pingHelper(ctx, args),
 });
 
 export const start = mutation({
@@ -49,11 +42,6 @@ export const status = query({
   returns: v.union(v.null(), vStatus),
   handler: async (ctx, args) => {
     const worker = await getWorker(ctx, args.name);
-    if (!worker) return null;
-    const state = await getWorkerState(ctx, args.name);
-    return {
-      kind: worker.state.kind,
-      lastWorkTs: state?.lastWorkTs ?? 0,
-    };
+    return worker?.status;
   },
 });

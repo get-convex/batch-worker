@@ -55,20 +55,11 @@ export const DEFAULT_CONFIG: Config = {
  *   (≤ RUNNING_THRESHOLD_MS). A ping is a no-op — work is picked up soon.
  * - `waiting`: the loop is sleeping until `runAtMs`.
  */
-export const vRunState = v.union(
+export const vStatus = v.union(
   v.object({ kind: v.literal("idle") }),
   v.object({ kind: v.literal("running") }),
-  v.object({
-    kind: v.literal("waiting"),
-    runAtMs: v.number(),
-  }),
+  v.object({ kind: v.literal("stopped") }),
 );
-export type RunState = Infer<typeof vRunState>;
-
-export const vStatus = v.object({
-  kind: v.union(...vRunState.members.map((m) => m.fields.kind)),
-  lastWorkTs: v.number(),
-});
 export type Status = Infer<typeof vStatus>;
 
 // ── The work query / worker mutation contract ──────────────────────────────
@@ -97,27 +88,52 @@ export function vBatchResult<B extends Validator<any, "required", any>>(
   batch: B,
 ) {
   return v.union(
-    v.object({ kind: v.literal("work"), batch }),
+    v.object({ kind: v.optional(v.literal("work")), batch }),
     v.object({
       kind: v.literal("idle"),
       /**
-       * How long the loop waits before its first batch after being started from
-       * idle. Lets a burst of inserts accumulate so they're processed together.
+       * How long the loop keeps polling an idle queue before going fully idle.
+       * Helps avoid unnecessary workers state write conflicts.
        */
-      debounceMs: v.number(),
+      cooldownMs: v.number(),
       /**
-       * While cooling down (the query reports idle with no timeout but work was
-       * seen recently), how long to wait between polls of the work query.
+       * How long to wait between running the query again while cooling down.
        */
       pollIntervalMs: v.number(),
       /**
-       * How long the loop keeps polling an idle queue before going fully idle.
+       * Run again by this long from now at the latest. A ping after the debounce
+       * window but before the timeout interrupts and runs sooner. Defaults to
+       * `debounceMs` (a hard wait with no interruption).
        */
-      cooldownMs: v.number(),
       timeoutMs: v.optional(v.number()),
     }),
   );
 }
+
+/**
+ * What a work query returns: a `batch` of work to process, or `idle` with an
+ * optional `timeoutMs` hint for when to look again.
+ *
+ * @typeParam Batch - the shape passed to your worker mutation.
+ */
+export type BatchResult<Batch> =
+  | { kind: "work"; batch: Batch }
+  | {
+      kind: "idle";
+      /**
+       * How long the loop keeps polling an idle queue before going fully idle.
+       * Helps avoid unnecessary workers state write conflicts.
+       */
+      cooldownMs?: number;
+      /**
+       * How long to wait between running again while cooling down.
+       */
+      pollIntervalMs?: number;
+      /**
+       * The maximum time it should go idle.
+       */
+      timeoutMs?: number;
+    };
 
 /**
  * What a worker mutation may return to steer the loop. Returning nothing (or
@@ -131,12 +147,6 @@ export const vWorkerResult = v.union(
      * debounce / batch.
      */
     debounceMs: v.optional(v.number()),
-    /**
-     * Run again by this long from now at the latest. A ping after the debounce
-     * window but before the timeout interrupts and runs sooner. Defaults to
-     * `debounceMs` (a hard wait with no interruption).
-     */
-    timeoutMs: v.optional(v.number()),
   }),
 );
 export type WorkerResult = Infer<typeof vWorkerResult>;

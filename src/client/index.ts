@@ -6,6 +6,7 @@ import {
 import type { Infer } from "convex/values";
 import type { ComponentApi } from "../component/_generated/component.js";
 import {
+  type BatchResult,
   type Config,
   type Status,
   vBatchQueryArgs,
@@ -15,6 +16,7 @@ export {
   vBatchQueryArgs,
   vBatchResult,
   vWorkerResult,
+  type BatchResult,
   type BatchQueryArgs,
   type WorkerResult,
 } from "../component/shared.js";
@@ -22,33 +24,6 @@ export type { Config as WorkerConfig, Status as WorkerStatus };
 
 /** The args every work query receives — today just the worker's `name`. */
 export type QueryArgs = Infer<typeof vBatchQueryArgs>;
-
-/**
- * What a work query returns: a `batch` of work to process, or `idle` with an
- * optional `timeoutMs` hint for when to look again.
- *
- * @typeParam Batch - the shape passed to your worker mutation.
- */
-export type BatchResult<Batch> =
-  | { kind: "work"; batch: Batch }
-  | {
-      kind: "idle";
-      /**
-       * How long the loop waits after being started from idle.
-       * Lets a burst of inserts accumulate so they're processed together.
-       */
-      debounceMs?: number;
-      /**
-       * While cooling down (the query reports idle with no timeout but work was
-       * seen recently), how long to wait between polls of the work query.
-       */
-      pollIntervalMs: number;
-      /**
-       * How long the loop keeps polling an idle queue before going fully idle.
-       */
-      cooldownMs: number;
-      timeoutMs?: number;
-    };
 
 export type RunMutationCtx = {
   runMutation: <Mutation extends FunctionReference<"mutation", "internal">>(

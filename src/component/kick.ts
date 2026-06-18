@@ -6,8 +6,8 @@ import {
   type Config,
   DEFAULT_CONFIG,
   MONITOR_REFRESH_WITHIN_MS,
-  type RunState,
   RUNNING_THRESHOLD_MS,
+  MONITOR_LAG_MS,
 } from "./shared.js";
 
 export async function getWorker(ctx: QueryCtx, name: string) {
@@ -17,11 +17,19 @@ export async function getWorker(ctx: QueryCtx, name: string) {
     .unique();
 }
 
-export async function getWorkerState(ctx: QueryCtx, name: string) {
-  return ctx.db
-    .query("workerState")
-    .withIndex("name", (q) => q.eq("name", name))
-    .unique();
+export async function getOrCreateWorkerState(
+  ctx: MutationCtx,
+  worker: Doc<"workers">,
+) {
+  const state = await ctx.db.get("workerState", worker.stateId);
+  if (state) return state;
+  worker.stateId = await ctx.db.insert("workerState", {
+    generation: 0n,
+    lastWorkTs: 0,
+    heartbeat: 0,
+  });
+  await ctx.db.patch("workers", worker._id, { stateId: worker.stateId });
+  return (await ctx.db.get("workerState", worker.stateId))!;
 }
 
 // ── Public entry points (ping / start / stop) ──────────────────────────────
@@ -40,15 +48,13 @@ export async function ping(
     name: string;
     workQuery: string;
     workerMutation: string;
-    config: Partial<Config>;
+    config?: Partial<Config> | undefined;
   },
 ): Promise<void> {
-  const config: Config = { ...DEFAULT_CONFIG, ...args.config };
   const worker = await getWorker(ctx, args.name);
 
   if (!worker) {
-    await ctx.db.insert("workerState", {
-      name: args.name,
+    const stateId = await ctx.db.insert("workerState", {
       generation: 0n,
       lastWorkTs: 0,
       heartbeat: 0,
@@ -57,24 +63,32 @@ export async function ping(
       name: args.name,
       workQuery: args.workQuery,
       workerMutation: args.workerMutation,
-      config,
-      state: { kind: "idle" },
+      config: args.config ?? {},
+      status: { kind: "running" },
+      stateId,
     });
-    await startLoop(ctx, (await ctx.db.get("workers", workerId))!);
+    const delayMs = args.config?.debounceMs ?? DEFAULT_CONFIG.debounceMs;
+    const worker = (await ctx.db.get("workers", workerId))!;
+    await scheduleLoopRun(ctx, worker, { delayMs });
     return;
   }
 
-  // Refresh handles/config only while idle — writing them while the loop runs
-  // would OCC-conflict with the per-insert read, and a running loop already
-  // has what it needs.
-  if (worker.state.kind === "idle") {
-    await ctx.db.patch("workers", worker._id, {
-      workQuery: args.workQuery,
-      workerMutation: args.workerMutation,
-      config,
-    });
+  if (
+    args.workQuery !== worker.workQuery ||
+    args.workerMutation !== worker.workerMutation ||
+    (args.config &&
+      (args.config.debounceMs !== worker.config.debounceMs ||
+        args.config.errorBackoffMs !== worker.config.errorBackoffMs ||
+        args.config.monitorLagMs !== worker.config.monitorLagMs))
+  ) {
+    worker.workQuery = args.workQuery;
+    worker.workerMutation = args.workerMutation;
+    if (args.config) {
+      worker.config = args.config;
+    }
+    await ctx.db.replace("workers", worker._id, worker);
   }
-  await wake(ctx, (await ctx.db.get("workers", worker._id))!);
+  await wake(ctx, worker);
 }
 
 /**
@@ -94,80 +108,76 @@ export async function start(ctx: MutationCtx, name: string): Promise<void> {
 export async function stop(ctx: MutationCtx, name: string): Promise<void> {
   const worker = await getWorker(ctx, name);
   if (!worker) return;
-  const state = await getWorkerState(ctx, name);
+  const state = await getOrCreateWorkerState(ctx, worker);
   if (state?.runnerId) {
     await cancelIfPending(ctx, state.runnerId);
-    await ctx.db.patch("workerState", state._id, { runnerId: undefined });
+    await ctx.db.patch("workerState", state._id, {
+      runnerId: undefined,
+      generation: state.generation + 1n,
+    });
   }
-  await cancelMonitor(ctx, worker);
-  await ctx.db.patch("workers", worker._id, { state: { kind: "idle" } });
+  await cancelMonitor(ctx, state);
+  await ctx.db.patch("workers", worker._id, { status: { kind: "idle" } });
 }
 
 // ── Waking the loop ────────────────────────────────────────────────────────
 
 /**
  * Decide whether a ping/start should do anything:
- * - idle    → start a fresh loop.
+ * - idle    → start a fresh loop (unless there's one scheduled for soon)
  * - running → no-op (work will be picked up imminently).
- * - waiting → suppressed during the debounce window; otherwise interrupt and
- *   run now (unless the loop is already about to run).
  */
 async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
   const console = createLogger(env.LOG_LEVEL);
-  const state = worker.state;
-  if (state.kind === "idle") {
-    await startLoop(ctx, worker);
+  const status = worker.status;
+  if (status.kind === "running" || status.kind === "stopped") {
+    console.debug(`[wake] "${worker.name}" ${status.kind} — no-op`);
     return;
   }
-  if (state.kind === "running") {
-    console.debug(`[wake] "${worker.name}" running — no-op`);
-    return;
-  }
+  const state = (await ctx.db.get("workerState", worker.stateId)) ?? {
+    runnerId: undefined,
+    lastWorkTs: 0,
+  };
   const now = Date.now();
-  if (now < state.debounceUntilMs) {
-    console.debug(`[wake] "${worker.name}" within debounce — no-op`);
+  const loop =
+    state.runnerId &&
+    (await ctx.db.system.get("_scheduled_functions", state.runnerId));
+  if (
+    loop?.state.kind === "pending" &&
+    loop.scheduledTime < now + RUNNING_THRESHOLD_MS
+  ) {
+    console.debug(
+      `[wake] "${worker.name}" scheduled for immediate execution — no-op`,
+    );
     return;
   }
-  if (now >= state.runAtMs) {
-    console.debug(`[wake] "${worker.name}" about to run — no-op`);
-    return;
-  }
-  // Interrupt the wait and run now.
-  const ws = await getWorkerState(ctx, worker.name);
-  if (ws?.runnerId) await cancelIfPending(ctx, ws.runnerId);
   console.debug(`[wake] "${worker.name}" interrupting wait`);
-  await startLoop(ctx, worker, 0);
+  if (loop) await cancelIfPending(ctx, loop._id);
+  // Possibly wait for a debounce window before running
+  const delayMs = Math.min(
+    0,
+    state.lastWorkTs +
+      (worker.config.debounceMs ?? DEFAULT_CONFIG.debounceMs) -
+      now,
+  );
+  await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
+  await scheduleLoopRun(ctx, worker, { delayMs });
 }
 
 // ── Scheduling the loop ────────────────────────────────────────────────────
 
-/**
- * Start a fresh loop chain. Used by ping/start (debounced), the monitor
- * (restart), and ping interrupts (delayMs = 0).
- */
-export async function startLoop(
-  ctx: MutationCtx,
-  worker: Doc<"workers">,
-  delayMs: number = worker.config.debounceMs,
-): Promise<void> {
-  const now = Date.now();
-  const runState: RunState =
-    delayMs <= RUNNING_THRESHOLD_MS
-      ? { kind: "running" }
-      : { kind: "waiting", runAtMs: now + delayMs, debounceUntilMs: now };
-  await scheduleLoopRun(ctx, worker, { delayMs, runState });
-}
-
-/** Re-run the loop after `delayMs`, staying in the (ping-no-op) running state. */
+/** Re-run the loop after `delayMs`, staying in the running state. */
 export async function continueRunning(
   ctx: MutationCtx,
   worker: Doc<"workers">,
   delayMs: number,
   lastWorkTs?: number,
 ): Promise<void> {
+  if (worker.status.kind !== "running") {
+    await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
+  }
   await scheduleLoopRun(ctx, worker, {
     delayMs,
-    runState: { kind: "running" },
     lastWorkTs,
   });
 }
@@ -179,20 +189,14 @@ export async function continueRunning(
 export async function scheduleWaiting(
   ctx: MutationCtx,
   worker: Doc<"workers">,
-  debounceMs: number,
   timeoutMs: number,
   lastWorkTs?: number,
 ): Promise<void> {
-  const now = Date.now();
   await scheduleLoopRun(ctx, worker, {
     delayMs: timeoutMs,
-    runState: {
-      kind: "waiting",
-      runAtMs: now + timeoutMs,
-      debounceUntilMs: now + debounceMs,
-    },
     lastWorkTs,
   });
+  await ctx.db.patch("workers", worker._id, { status: { kind: "idle" } });
 }
 
 /** Stop looping: mark idle and cancel the monitor. */
@@ -203,18 +207,19 @@ export async function goIdle(
 ): Promise<void> {
   await ctx.db.patch("workerState", state._id, {
     heartbeat: Date.now(),
+    generation: state.generation + 1n,
     runnerId: undefined,
   });
-  await cancelMonitor(ctx, worker);
-  await ctx.db.patch("workers", worker._id, { state: { kind: "idle" } });
+  await cancelMonitor(ctx, state);
+  await ctx.db.patch("workers", worker._id, { status: { kind: "idle" } });
 }
 
 async function scheduleLoopRun(
   ctx: MutationCtx,
   worker: Doc<"workers">,
-  opts: { delayMs: number; runState: RunState; lastWorkTs?: number },
+  opts: { delayMs: number; lastWorkTs?: number },
 ): Promise<void> {
-  const state = (await getWorkerState(ctx, worker.name))!;
+  const state = await getOrCreateWorkerState(ctx, worker);
   const generation = state.generation + 1n;
   const runnerId = await ctx.scheduler.runAfter(
     opts.delayMs,
@@ -227,26 +232,9 @@ async function scheduleLoopRun(
     heartbeat: Date.now(),
     ...(opts.lastWorkTs !== undefined ? { lastWorkTs: opts.lastWorkTs } : {}),
   });
-  await setRunState(ctx, worker, opts.runState);
-  await ensureMonitorBehind(ctx, worker._id, Date.now() + opts.delayMs);
-}
 
-/** Patch `workers.state` only when it actually changed, to avoid churn. */
-async function setRunState(
-  ctx: MutationCtx,
-  worker: Doc<"workers">,
-  next: RunState,
-): Promise<void> {
-  const cur = worker.state;
-  const unchanged =
-    cur.kind === next.kind &&
-    (next.kind !== "waiting" ||
-      (cur.kind === "waiting" &&
-        cur.runAtMs === next.runAtMs &&
-        cur.debounceUntilMs === next.debounceUntilMs));
-  if (!unchanged) {
-    await ctx.db.patch("workers", worker._id, { state: next });
-  }
+  // await ctx.db.patch("workers", worker._id, { status: worker.status });
+  await ensureMonitored(ctx, worker, Date.now() + opts.delayMs);
 }
 
 // ── Monitor ────────────────────────────────────────────────────────────────
@@ -257,26 +245,29 @@ async function setRunState(
  * fast-looping worker pushes it back roughly once a minute rather than every
  * iteration.
  */
-export async function ensureMonitorBehind(
+export async function ensureMonitored(
   ctx: MutationCtx,
-  workerId: Id<"workers">,
+  worker: Doc<"workers">,
   loopRunAtMs: number,
 ): Promise<void> {
-  const worker = (await ctx.db.get("workers", workerId))!;
+  const state = await ctx.db.get("workerState", worker.stateId);
+  if (!state) return;
+
   const now = Date.now();
   const close =
-    worker.monitorRunAtMs == null ||
-    worker.monitorRunAtMs <= now + MONITOR_REFRESH_WITHIN_MS;
-  if (worker.monitorId && !close) return;
+    state.monitorRunAtMs == null ||
+    state.monitorRunAtMs <= now + MONITOR_REFRESH_WITHIN_MS;
+  if (state.monitorId && !close) return;
 
-  if (worker.monitorId) await cancelIfPending(ctx, worker.monitorId);
-  const desiredAt = loopRunAtMs + worker.config.monitorLagMs;
-  const monitorId = await ctx.scheduler.runAfter(
-    Math.max(0, desiredAt - now),
+  if (state.monitorId) await cancelIfPending(ctx, state.monitorId);
+  const desiredAt =
+    loopRunAtMs + (worker.config.monitorLagMs ?? MONITOR_LAG_MS);
+  const monitorId = await ctx.scheduler.runAt(
+    desiredAt,
     internal.monitor.monitor,
     { name: worker.name },
   );
-  await ctx.db.patch("workers", workerId, {
+  await ctx.db.patch("workerState", worker.stateId, {
     monitorId,
     monitorRunAtMs: desiredAt,
   });
@@ -284,11 +275,11 @@ export async function ensureMonitorBehind(
 
 export async function cancelMonitor(
   ctx: MutationCtx,
-  worker: Doc<"workers">,
+  state: Doc<"workerState">,
 ): Promise<void> {
-  if (worker.monitorId) await cancelIfPending(ctx, worker.monitorId);
-  if (worker.monitorId || worker.monitorRunAtMs != null) {
-    await ctx.db.patch("workers", worker._id, {
+  if (state.monitorId) await cancelIfPending(ctx, state.monitorId);
+  if (state.monitorId || state.monitorRunAtMs != null) {
+    await ctx.db.patch("workerState", state._id, {
       monitorId: undefined,
       monitorRunAtMs: undefined,
     });
