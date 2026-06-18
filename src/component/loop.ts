@@ -141,5 +141,6 @@ async function confirmHasWork(
   queryArgs: BatchQueryArgs,
 ): Promise<boolean> {
   const confirm = await ctx.runQuery(queryRef, queryArgs);
-  return !!confirm && confirm.kind === "work";
+  // Match the snapshot path's detection: a result with a `batch` is work.
+  return !!confirm && "batch" in confirm;
 }

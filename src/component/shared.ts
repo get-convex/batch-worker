@@ -95,15 +95,15 @@ export function vBatchResult<B extends Validator<any, "required", any>>(
        * How long the loop keeps polling an idle queue before going fully idle.
        * Helps avoid unnecessary workers state write conflicts.
        */
-      cooldownMs: v.number(),
+      cooldownMs: v.optional(v.number()),
       /**
        * How long to wait between running the query again while cooling down.
        */
-      pollIntervalMs: v.number(),
+      pollIntervalMs: v.optional(v.number()),
       /**
-       * Run again by this long from now at the latest. A ping after the debounce
-       * window but before the timeout interrupts and runs sooner. Defaults to
-       * `debounceMs` (a hard wait with no interruption).
+       * Once cooled down, run again by this long from now at the latest. A ping
+       * interrupts and runs sooner. If omitted, the loop goes fully idle and
+       * only a ping/start wakes it.
        */
       timeoutMs: v.optional(v.number()),
     }),

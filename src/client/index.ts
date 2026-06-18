@@ -57,7 +57,7 @@ export type WorkerOptions = {
  *  - a **work query** (args validated by {@link vBatchQueryArgs}, returns
  *    {@link vBatchResult}) that returns the next batch or `idle`, and
  *  - a **worker mutation** that processes a batch and owns its cleanup. It may
- *    return `{ debounceMs, timeoutMs }` to throttle the loop.
+ *    return `{ debounceMs }` to throttle the loop.
  *
  * After inserting work, call {@link BatchWorker.ping}. The component runs the loop,
  * debounces bursts, sleeps until the next due item, and restarts the loop if it
@@ -104,7 +104,7 @@ export class BatchWorker {
         "mutation",
         "internal",
         Batch,
-        { debounceMs?: number; timeoutMs?: number } | null | void
+        { debounceMs?: number } | null | void
       >;
       /** Worker name; defaults to the instance's configured name. */
       name?: string;

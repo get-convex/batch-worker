@@ -37,7 +37,10 @@ export const monitor = internalMutation({
     const loop =
       state?.runnerId &&
       (await ctx.db.system.get("_scheduled_functions", state?.runnerId));
-    if (loop?.state.kind !== "pending") {
+    const alive =
+      loop &&
+      (loop.state.kind === "pending" || loop.state.kind === "inProgress");
+    if (!alive) {
       console.error(`[monitor] "${name}" loop is not running — restarting`);
       console.event("restart", { name });
       await continueRunning(ctx, worker, 0);
@@ -46,6 +49,8 @@ export const monitor = internalMutation({
 
     // Loop is alive (scheduled or running) but we fired anyway — re-arm behind
     // its next run so we keep trailing it.
-    await ensureMonitored(ctx, worker, loop.scheduledTime);
+    const loopRunAtMs =
+      loop.state.kind === "pending" ? loop.scheduledTime : Date.now();
+    await ensureMonitored(ctx, worker, loopRunAtMs);
   },
 });
