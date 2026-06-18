@@ -130,7 +130,7 @@ export type BatchResult<Batch> =
        */
       pollIntervalMs?: number;
       /**
-       * The maximum time it should go idle.
+       * The maximum time it should go idle for when no pings occur.
        */
       timeoutMs?: number;
     };
