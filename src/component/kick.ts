@@ -154,12 +154,7 @@ async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
   console.debug(`[wake] "${worker.name}" interrupting wait`);
   if (loop) await cancelIfPending(ctx, loop._id);
   // Possibly wait for a debounce window before running
-  const delayMs = Math.min(
-    0,
-    state.lastWorkTs +
-      (worker.config.debounceMs ?? DEFAULT_CONFIG.debounceMs) -
-      now,
-  );
+  const delayMs = worker.config.debounceMs ?? DEFAULT_CONFIG.debounceMs;
   await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
   await scheduleLoopRun(ctx, worker, { delayMs });
 }

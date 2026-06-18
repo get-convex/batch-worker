@@ -40,7 +40,7 @@ export const vConfig = v.object({
 export type Config = Infer<typeof vConfig>;
 
 export const DEFAULT_CONFIG: Config = {
-  debounceMs: 100,
+  debounceMs: 0,
   errorBackoffMs: 1 * MINUTE,
   monitorLagMs: MONITOR_LAG_MS,
 };
