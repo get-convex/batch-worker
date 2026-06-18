@@ -11,10 +11,10 @@ export const MINUTE = 60 * SECOND;
 export const RUNNING_THRESHOLD_MS = 1 * SECOND;
 // The monitor is scheduled this long after the loop's next run, so it only
 // fires if the loop fails to run (and reschedule the monitor) on time.
-export const MONITOR_LAG_MS = 90 * SECOND;
+export const MONITOR_LAG_MS = 60 * SECOND;
 // Refresh the monitor when it would otherwise fire within this window — keeps
 // it trailing the loop without rescheduling on every iteration.
-export const MONITOR_REFRESH_WITHIN_MS = 30 * SECOND;
+export const MONITOR_REFRESH_WITHIN_MS = 10 * SECOND;
 
 /**
  * Configuration for a worker's main loop.
