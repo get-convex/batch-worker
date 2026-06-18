@@ -88,6 +88,11 @@ export async function ping(
     }
     await ctx.db.replace("workers", worker._id, worker);
   }
+  if (worker.status.kind !== "idle") {
+    const console = createLogger(env.LOG_LEVEL);
+    console.debug(`[ping] "${worker.name}" ${worker.status.kind} — no-op`);
+    return;
+  }
   await wake(ctx, worker);
 }
 
@@ -98,12 +103,18 @@ export async function ping(
 export async function start(ctx: MutationCtx, name: string): Promise<void> {
   const worker = await getWorker(ctx, name);
   if (!worker) return;
+  const status = worker.status;
+  if (status.kind !== "stopped") {
+    const console = createLogger(env.LOG_LEVEL);
+    console.debug(`[start] "${worker.name}" ${status.kind} — no-op`);
+    return;
+  }
   await wake(ctx, worker);
 }
 
 /**
- * Stop the worker: cancel its loop and monitor and mark it idle. `start` or
- * `ping` will resume it.
+ * Stop the worker: cancel its loop and monitor and mark it idle.
+ * Only `start` will resume it.
  */
 export async function stop(ctx: MutationCtx, name: string): Promise<void> {
   const worker = await getWorker(ctx, name);
@@ -117,7 +128,7 @@ export async function stop(ctx: MutationCtx, name: string): Promise<void> {
     });
   }
   await cancelMonitor(ctx, state);
-  await ctx.db.patch("workers", worker._id, { status: { kind: "idle" } });
+  await ctx.db.patch("workers", worker._id, { status: { kind: "stopped" } });
 }
 
 // ── Waking the loop ────────────────────────────────────────────────────────
@@ -129,11 +140,6 @@ export async function stop(ctx: MutationCtx, name: string): Promise<void> {
  */
 async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
   const console = createLogger(env.LOG_LEVEL);
-  const status = worker.status;
-  if (status.kind === "running" || status.kind === "stopped") {
-    console.debug(`[wake] "${worker.name}" ${status.kind} — no-op`);
-    return;
-  }
   const state = (await ctx.db.get("workerState", worker.stateId)) ?? {
     runnerId: undefined,
     lastWorkTs: 0,

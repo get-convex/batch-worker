@@ -88,14 +88,14 @@ describe("worker component", () => {
     expect(status?.kind).toBe("running");
   });
 
-  test("stop cancels the loop and goes idle", async () => {
+  test("stop cancels the loop and goes stopped", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
     await t.mutation(api.lib.stop, { name: "" });
     await t.run(async (ctx) => {
       const worker = await getWorker(ctx, "");
       assert(worker);
-      expect(worker!.status.kind).toBe("idle");
+      expect(worker!.status.kind).toBe("stopped");
 
       const state = await getOrCreateWorkerState(ctx, worker);
       expect(state!.monitorId).toBeUndefined();
@@ -151,7 +151,11 @@ describe("worker component", () => {
     const before = await t.run((ctx) => getOrCreateWorkerState(ctx, worker));
     expect(before!.runnerId).toBeDefined();
 
-    await t.mutation(api.lib.start, { name: "" });
+    await t.mutation(api.lib.ping, {
+      name: "",
+      workQuery: "",
+      workerMutation: "",
+    });
 
     const after = await t.run((ctx) => getOrCreateWorkerState(ctx, worker));
     const workerAfter = await t.run((ctx) => getWorker(ctx, ""));
@@ -211,7 +215,7 @@ describe("worker component", () => {
     await t.mutation(internal.monitor.monitor, { name: "" });
     const worker = await t.run((ctx) => getWorker(ctx, ""));
     assert(worker);
-    expect(worker.status.kind).toBe("idle");
+    expect(worker.status.kind).toBe("stopped");
     const state = await t.run((ctx) => getOrCreateWorkerState(ctx, worker));
     expect(state!.monitorId).toBeUndefined();
   });
@@ -227,7 +231,9 @@ describe("worker component", () => {
       "running",
     );
     await t.mutation(api.lib.stop, { name: "a" });
-    expect((await t.query(api.lib.status, { name: "a" }))?.kind).toBe("idle");
+    expect((await t.query(api.lib.status, { name: "a" }))?.kind).toBe(
+      "stopped",
+    );
     expect((await t.query(api.lib.status, { name: "b" }))?.kind).toBe(
       "running",
     );

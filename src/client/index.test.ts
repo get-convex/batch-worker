@@ -118,7 +118,7 @@ describe("Worker client", () => {
     const t = initConvexTest(schema);
     await t.mutation(testApi.enqueue, { value: 1 });
     await t.mutation(testApi.stopWorker, {});
-    expect((await t.query(testApi.status, {}))?.kind).toBe("idle");
+    expect((await t.query(testApi.status, {}))?.kind).toBe("stopped");
 
     await t.mutation(testApi.startWorker, {});
     expect((await t.query(testApi.status, {}))?.kind).toBe("running");

@@ -28,9 +28,9 @@ export const monitor = internalMutation({
     }
 
     const state = await getOrCreateWorkerState(ctx, worker);
-    if (worker.status.kind === "idle") {
+    if (worker.status.kind !== "running") {
       await cancelMonitor(ctx, state);
-      console.debug(`[monitor] "${name}" idle, stopping`);
+      console.debug(`[monitor] "${name}" ${worker.status.kind}, no-op`);
       return;
     }
 
