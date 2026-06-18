@@ -29,11 +29,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           config?: {
-            cooldownMs?: number;
             debounceMs?: number;
             errorBackoffMs?: number;
             monitorLagMs?: number;
-            pollIntervalMs?: number;
           };
           name: string;
           workQuery: string;

@@ -26,15 +26,6 @@ export const vConfig = v.object({
    */
   debounceMs: v.number(),
   /**
-   * While cooling down (the query reports idle with no timeout but work was
-   * seen recently), how long to wait between polls of the work query.
-   */
-  pollIntervalMs: v.number(),
-  /**
-   * How long the loop keeps polling an idle queue before going fully idle.
-   */
-  cooldownMs: v.number(),
-  /**
    * How long to wait before re-running the loop after the worker mutation
    * throws. The loop keeps retrying (and logging) until the code is fixed.
    */
@@ -50,8 +41,6 @@ export type Config = Infer<typeof vConfig>;
 
 export const DEFAULT_CONFIG: Config = {
   debounceMs: 100,
-  pollIntervalMs: 250,
-  cooldownMs: 10 * SECOND,
   errorBackoffMs: 1 * MINUTE,
   monitorLagMs: MONITOR_LAG_MS,
 };
@@ -64,9 +53,7 @@ export const DEFAULT_CONFIG: Config = {
  * - `idle`: no loop scheduled. `ping`/`start` must start it.
  * - `running`: the loop is executing or scheduled to run imminently
  *   (≤ RUNNING_THRESHOLD_MS). A ping is a no-op — work is picked up soon.
- * - `waiting`: the loop is sleeping until `runAtMs`. A ping after
- *   `debounceUntilMs` (but before `runAtMs`) interrupts and runs it now;
- *   before `debounceUntilMs` a ping is suppressed (debounce window).
+ * - `waiting`: the loop is sleeping until `runAtMs`.
  */
 export const vRunState = v.union(
   v.object({ kind: v.literal("idle") }),
@@ -74,7 +61,6 @@ export const vRunState = v.union(
   v.object({
     kind: v.literal("waiting"),
     runAtMs: v.number(),
-    debounceUntilMs: v.number(),
   }),
 );
 export type RunState = Infer<typeof vRunState>;
@@ -116,6 +102,20 @@ export function vBatchResult<B extends Validator<any, "required", any>>(
     v.object({ kind: v.literal("work"), batch }),
     v.object({
       kind: v.literal("idle"),
+      /**
+       * How long the loop waits before its first batch after being started from
+       * idle. Lets a burst of inserts accumulate so they're processed together.
+       */
+      debounceMs: v.number(),
+      /**
+       * While cooling down (the query reports idle with no timeout but work was
+       * seen recently), how long to wait between polls of the work query.
+       */
+      pollIntervalMs: v.number(),
+      /**
+       * How long the loop keeps polling an idle queue before going fully idle.
+       */
+      cooldownMs: v.number(),
       timeoutMs: v.optional(v.number()),
     }),
   );

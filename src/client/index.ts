@@ -31,7 +31,24 @@ export type QueryArgs = Infer<typeof vBatchQueryArgs>;
  */
 export type BatchResult<Batch> =
   | { kind: "work"; batch: Batch }
-  | { kind: "idle"; timeoutMs?: number };
+  | {
+      kind: "idle";
+      /**
+       * How long the loop waits after being started from idle.
+       * Lets a burst of inserts accumulate so they're processed together.
+       */
+      debounceMs?: number;
+      /**
+       * While cooling down (the query reports idle with no timeout but work was
+       * seen recently), how long to wait between polls of the work query.
+       */
+      pollIntervalMs: number;
+      /**
+       * How long the loop keeps polling an idle queue before going fully idle.
+       */
+      cooldownMs: number;
+      timeoutMs?: number;
+    };
 
 export type RunMutationCtx = {
   runMutation: <Mutation extends FunctionReference<"mutation", "internal">>(
