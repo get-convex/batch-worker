@@ -51,12 +51,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         { name: string },
-        null | {
-          generation: bigint;
-          heartbeat: number;
-          kind: "idle" | "running" | "waiting";
-          lastWorkTs: number;
-        },
+        null | { kind: "idle" | "running" | "waiting"; lastWorkTs: number },
         Name
       >;
       stop: FunctionReference<

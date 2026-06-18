@@ -53,9 +53,7 @@ export const status = query({
     const state = await getWorkerState(ctx, args.name);
     return {
       kind: worker.state.kind,
-      generation: state?.generation ?? 0n,
       lastWorkTs: state?.lastWorkTs ?? 0,
-      heartbeat: state?.heartbeat ?? 0,
     };
   },
 });
