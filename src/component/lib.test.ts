@@ -193,10 +193,16 @@ describe("worker component", () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs({ name: "a" }));
     await t.mutation(api.lib.ping, pingArgs({ name: "b" }));
-    expect((await t.query(api.lib.status, { name: "a" }))?.kind).toBe("running");
-    expect((await t.query(api.lib.status, { name: "b" }))?.kind).toBe("running");
+    expect((await t.query(api.lib.status, { name: "a" }))?.kind).toBe(
+      "running",
+    );
+    expect((await t.query(api.lib.status, { name: "b" }))?.kind).toBe(
+      "running",
+    );
     await t.mutation(api.lib.stop, { name: "a" });
     expect((await t.query(api.lib.status, { name: "a" }))?.kind).toBe("idle");
-    expect((await t.query(api.lib.status, { name: "b" }))?.kind).toBe("running");
+    expect((await t.query(api.lib.status, { name: "b" }))?.kind).toBe(
+      "running",
+    );
   });
 });

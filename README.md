@@ -60,11 +60,7 @@ args.
 import { v } from "convex/values";
 import { Worker, vBatchQueryArgs, vBatchResult } from "@convex-dev/worker";
 import { components, internal } from "./_generated/api";
-import {
-  internalMutation,
-  internalQuery,
-  mutation,
-} from "./_generated/server";
+import { internalMutation, internalQuery, mutation } from "./_generated/server";
 
 const worker = new Worker(components.worker);
 
@@ -123,7 +119,8 @@ processed, otherwise the next query will return them again.
 
 ### Steering the loop from your worker mutation
 
-Your worker mutation may return `{ debounceMs, timeoutMs }` to throttle the loop:
+Your worker mutation may return `{ debounceMs, timeoutMs }` to throttle the
+loop:
 
 ```ts
 return {
@@ -198,10 +195,10 @@ Run `npm run dev:frontend` to interact with it through a Vite app.
 
 ### How it works
 
-| Table         | Written by                          | Read by              |
-| ------------- | ----------------------------------- | -------------------- |
+| Table         | Written by                          | Read by                 |
+| ------------- | ----------------------------------- | ----------------------- |
 | `workers`     | `ping`/`start`/`loop` (transitions) | `ping`/`start`, monitor |
-| `workerState` | `loop` (every iteration)            | `loop`, monitor      |
+| `workerState` | `loop` (every iteration)            | `loop`, monitor         |
 
 The high-churn loop state lives in `workerState`, separate from the rarely-
 written `workers` doc (which holds the run-state: `idle` / `running` /
@@ -209,6 +206,6 @@ written `workers` doc (which holds the run-state: `idle` / `running` /
 `workers` and return without conflicting (OCC) with the fast-looping loop. A
 monotonic `generation` (in `workerState`) guarantees only one loop chain runs at
 a time: a superseded loop sees a mismatched generation and exits. The liveness
-monitor is scheduled ~`monitorLagMs` *after* the loop's next run and pushed back
+monitor is scheduled ~`monitorLagMs` _after_ the loop's next run and pushed back
 as the loop keeps running, so it only fires (and restarts the loop) if the loop
 actually died.

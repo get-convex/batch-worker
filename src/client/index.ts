@@ -145,7 +145,9 @@ export class Worker {
 
   /** Stop the worker's loop and monitor. `start`/`ping` resumes it. */
   async stop(ctx: RunMutationCtx, name?: string): Promise<void> {
-    await ctx.runMutation(this.component.lib.stop, { name: this.nameFor(name) });
+    await ctx.runMutation(this.component.lib.stop, {
+      name: this.nameFor(name),
+    });
   }
 
   /** Get the current run status of the worker, or `null` if it's never run. */

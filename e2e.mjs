@@ -132,7 +132,8 @@ function stats(nums) {
   if (nums.length === 0) return null;
   const sorted = [...nums].sort((a, b) => a - b);
   const sum = sorted.reduce((a, b) => a + b, 0);
-  const pct = (p) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+  const pct = (p) =>
+    sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
   return {
     n: sorted.length,
     min: sorted[0],
@@ -163,7 +164,10 @@ async function scenarioColdStart() {
   }
   await waitIdle();
   const result = { trials, serverLatencyMs: stats(latencies), latencies };
-  console.log("  server-side enqueue->process latency:", result.serverLatencyMs);
+  console.log(
+    "  server-side enqueue->process latency:",
+    result.serverLatencyMs,
+  );
   return result;
 }
 
@@ -177,7 +181,9 @@ async function scenarioBurst(total) {
 
   const chunk = 100;
   for (let i = 0; i < total; i += chunk) {
-    await client.mutation(api.e2e.enqueue, { count: Math.min(chunk, total - i) });
+    await client.mutation(api.e2e.enqueue, {
+      count: Math.min(chunk, total - i),
+    });
   }
   await waitDrain();
   const until = Date.now() / 1000;
@@ -249,9 +255,6 @@ results.coldStart = await scenarioColdStart();
 results.burst1000 = await scenarioBurst(1000);
 results.singleItemCalls = await scenarioSingleCalls();
 
-writeFileSync(
-  `${OUT_DIR}/results.json`,
-  JSON.stringify(results, null, 2),
-);
+writeFileSync(`${OUT_DIR}/results.json`, JSON.stringify(results, null, 2));
 console.log(`\nWrote ${OUT_DIR}/results.json`);
 process.exit(0);

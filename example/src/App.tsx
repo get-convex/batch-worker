@@ -30,7 +30,9 @@ function App() {
             style={{ width: "6rem" }}
           />
           <button onClick={() => enqueue(Number(value) || 0)}>Add event</button>
-          <button onClick={() => Array.from({ length: 25 }, (_, i) => enqueue(i + 1))}>
+          <button
+            onClick={() => Array.from({ length: 25 }, (_, i) => enqueue(i + 1))}
+          >
             Add 25 events
           </button>
         </div>

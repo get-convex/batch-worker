@@ -101,7 +101,8 @@ export const loop = internalMutation({
     }
 
     // ── No work, but the query told us when to look again. ──
-    const idleTimeoutMs = result?.kind === "idle" ? result.timeoutMs : undefined;
+    const idleTimeoutMs =
+      result?.kind === "idle" ? result.timeoutMs : undefined;
     if (idleTimeoutMs != null) {
       if (await confirmHasWork(ctx, queryRef, queryArgs)) {
         await continueRunning(ctx, worker, 0);
@@ -140,6 +141,9 @@ async function confirmHasWork(
   queryRef: FunctionHandle<"query", BatchQueryArgs, BatchResult>,
   queryArgs: BatchQueryArgs,
 ): Promise<boolean> {
-  const confirm = (await ctx.runQuery(queryRef, queryArgs)) as BatchResult | null;
+  const confirm = (await ctx.runQuery(
+    queryRef,
+    queryArgs,
+  )) as BatchResult | null;
   return !!confirm && confirm.kind === "work";
 }

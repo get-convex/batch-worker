@@ -83,11 +83,7 @@ export const vRunState = v.union(
 export type RunState = Infer<typeof vRunState>;
 
 export const vStatus = v.object({
-  kind: v.union(
-    v.literal("idle"),
-    v.literal("running"),
-    v.literal("waiting"),
-  ),
+  kind: v.union(v.literal("idle"), v.literal("running"), v.literal("waiting")),
   generation: v.int64(),
   lastWorkTs: v.number(),
   heartbeat: v.number(),
