@@ -26,7 +26,6 @@ export async function getOrCreateWorkerState(
   worker.stateId = await ctx.db.insert("workerState", {
     generation: 0n,
     lastWorkTs: 0,
-    heartbeat: 0,
   });
   await ctx.db.patch("workers", worker._id, { stateId: worker.stateId });
   return (await ctx.db.get("workerState", worker.stateId))!;
@@ -57,7 +56,6 @@ export async function ping(
     const stateId = await ctx.db.insert("workerState", {
       generation: 0n,
       lastWorkTs: 0,
-      heartbeat: 0,
     });
     const workerId = await ctx.db.insert("workers", {
       name: args.name,
@@ -206,7 +204,6 @@ export async function goIdle(
   state: Doc<"workerState">,
 ): Promise<void> {
   await ctx.db.patch("workerState", state._id, {
-    heartbeat: Date.now(),
     generation: state.generation + 1n,
     runnerId: undefined,
   });
@@ -229,7 +226,6 @@ async function scheduleLoopRun(
   await ctx.db.patch("workerState", state._id, {
     generation,
     runnerId,
-    heartbeat: Date.now(),
     ...(opts.lastWorkTs !== undefined ? { lastWorkTs: opts.lastWorkTs } : {}),
   });
 

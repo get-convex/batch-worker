@@ -27,8 +27,6 @@ export default defineSchema({
     generation: v.int64(),
     // When the loop last saw work; drives the cooldown window.
     lastWorkTs: v.number(),
-    // Updated each iteration; lets the monitor reason about liveness.
-    heartbeat: v.number(),
     // The currently-scheduled loop invocation, checked by the monitor and
     // canceled when a ping interrupts a wait.
     runnerId: v.optional(v.id("_scheduled_functions")),
