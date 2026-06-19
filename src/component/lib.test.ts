@@ -13,8 +13,24 @@ import {
 import { api, internal } from "./_generated/api.js";
 import schema from "./schema.js";
 import { modules } from "./setup.test.js";
-import { getWorker, getOrCreateWorkerState, scheduleWaiting } from "./kick.js";
+import type { MutationCtx } from "./functions.js";
+import {
+  getWorker,
+  getOrCreateWorkerState,
+  scheduleWaiting,
+  start,
+} from "./kick.js";
+import { createMockLogger, type Logger } from "./logging.js";
 import { RUNNING_THRESHOLD_MS } from "./shared.js";
+
+// Component helpers expect `ctx.log` (injected by the function builders in
+// `functions.ts`); convex-test's raw ctx has none, so add one here. Defaults to
+// a silent mock logger; pass one in to assert logging side-effects.
+const run = <T>(
+  t: { run: <O>(fn: (ctx: Omit<MutationCtx, "log">) => Promise<O>) => Promise<O> },
+  fn: (ctx: MutationCtx) => Promise<T>,
+  log: Logger = createMockLogger(),
+): Promise<T> => t.run((ctx) => fn(Object.assign(ctx, { log })));
 
 // Dummy function handles. These never get invoked in these tests because we
 // don't drive the scheduler here — the loop body is exercised end-to-end by
@@ -38,7 +54,7 @@ describe("worker component", () => {
   test("ping creates the worker and schedules the loop", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
-    await t.run(async (ctx) => {
+    await run(t, async (ctx) => {
       const worker = await getWorker(ctx, "");
       assert(worker);
 
@@ -56,7 +72,7 @@ describe("worker component", () => {
   test("monitor is scheduled well after the loop", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
-    await t.run(async (ctx) => {
+    await run(t, async (ctx) => {
       const worker = await getWorker(ctx, "");
       assert(worker);
       const state = await getOrCreateWorkerState(ctx, worker);
@@ -69,11 +85,11 @@ describe("worker component", () => {
   test("ping is a no-op while running", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
-    const before = await t.run(async (ctx) =>
+    const before = await run(t, async (ctx) =>
       getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
     );
     await t.mutation(api.lib.ping, pingArgs());
-    const after = await t.run(async (ctx) =>
+    const after = await run(t, async (ctx) =>
       getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
     );
     expect(after!.generation).toBe(before!.generation);
@@ -92,7 +108,7 @@ describe("worker component", () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
     await t.mutation(api.lib.stop, { name: "" });
-    await t.run(async (ctx) => {
+    await run(t, async (ctx) => {
       const worker = await getWorker(ctx, "");
       assert(worker);
       expect(worker!.status.kind).toBe("stopped");
@@ -108,9 +124,9 @@ describe("worker component", () => {
     await t.mutation(api.lib.ping, pingArgs());
     await t.mutation(api.lib.stop, { name: "" });
     await t.mutation(api.lib.start, { name: "" });
-    const worker = await t.run((ctx) => getWorker(ctx, ""));
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
     assert(worker);
-    const state = await t.run((ctx) => getOrCreateWorkerState(ctx, worker));
+    const state = await run(t, (ctx) => getOrCreateWorkerState(ctx, worker));
     expect(worker!.status.kind).toBe("running");
     // ping (gen 1) → stop (bumps to 2, invalidating the canceled runner) →
     // start (bumps to 3).
@@ -123,11 +139,24 @@ describe("worker component", () => {
     expect(await t.query(api.lib.status, { name: "ghost" })).toBeNull();
   });
 
+  test("logging is captured as a side-effect", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.lib.ping, pingArgs()); // worker is now running
+    const log = createMockLogger();
+    // start on an already-running worker is a no-op that logs at debug.
+    await run(t, (ctx) => start(ctx, ""), log);
+    expect(
+      log.logs.some(
+        (l) => l.level === "debug" && String(l.args[0]).includes("[start]"),
+      ),
+    ).toBe(true);
+  });
+
   test("a superseded loop generation exits without changing state", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
     await t.mutation(internal.loop.loop, { name: "", generation: 0n });
-    const state = await t.run(async (ctx) => {
+    const state = await run(t, async (ctx) => {
       const worker = await getWorker(ctx, "");
       assert(worker);
       return getOrCreateWorkerState(ctx, worker);
@@ -140,15 +169,15 @@ describe("worker component", () => {
     await t.mutation(api.lib.ping, pingArgs());
     // Put it to sleep well beyond RUNNING_THRESHOLD_MS (status → idle, runner
     // pending far out).
-    await t.run(async (ctx) => {
+    await run(t, async (ctx) => {
       const w = await getWorker(ctx, "");
       assert(w);
       await scheduleWaiting(ctx, w, 10 * RUNNING_THRESHOLD_MS);
     });
-    const worker = await t.run((ctx) => getWorker(ctx, ""));
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
     assert(worker);
     expect(worker.status.kind).toBe("idle");
-    const before = await t.run((ctx) => getOrCreateWorkerState(ctx, worker));
+    const before = await run(t, (ctx) => getOrCreateWorkerState(ctx, worker));
     expect(before!.runnerId).toBeDefined();
 
     await t.mutation(api.lib.ping, {
@@ -157,8 +186,8 @@ describe("worker component", () => {
       workerMutation: "",
     });
 
-    const after = await t.run((ctx) => getOrCreateWorkerState(ctx, worker));
-    const workerAfter = await t.run((ctx) => getWorker(ctx, ""));
+    const after = await run(t, (ctx) => getOrCreateWorkerState(ctx, worker));
+    const workerAfter = await run(t, (ctx) => getWorker(ctx, ""));
     expect(workerAfter!.status.kind).toBe("running");
     expect(after!.generation > before!.generation).toBe(true);
     expect(after!.runnerId).not.toBe(before!.runnerId);
@@ -169,18 +198,18 @@ describe("worker component", () => {
     await t.mutation(api.lib.ping, pingArgs());
     // Sleep for less than RUNNING_THRESHOLD_MS — the loop is about to run, so a
     // ping shouldn't disturb it.
-    await t.run(async (ctx) => {
+    await run(t, async (ctx) => {
       const w = await getWorker(ctx, "");
       assert(w);
       await scheduleWaiting(ctx, w, RUNNING_THRESHOLD_MS / 2);
     });
-    const before = await t.run(async (ctx) =>
+    const before = await run(t, async (ctx) =>
       getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
     );
 
     await t.mutation(api.lib.start, { name: "" });
 
-    const after = await t.run(async (ctx) =>
+    const after = await run(t, async (ctx) =>
       getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
     );
     expect(after!.generation).toBe(before!.generation);
@@ -190,17 +219,17 @@ describe("worker component", () => {
   test("monitor restarts a dead loop and keeps watching", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
-    const before = await t.run(async (ctx) =>
+    const before = await run(t, async (ctx) =>
       getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
     );
-    await t.run((ctx) => ctx.scheduler.cancel(before!.runnerId!));
+    await run(t, (ctx) => ctx.scheduler.cancel(before!.runnerId!));
 
     await t.mutation(internal.monitor.monitor, { name: "" });
 
-    const after = await t.run(async (ctx) =>
+    const after = await run(t, async (ctx) =>
       getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
     );
-    const worker = await t.run((ctx) => getWorker(ctx, ""));
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
     assert(worker);
     expect(after!.generation > before!.generation).toBe(true);
     expect(after!.runnerId).not.toBe(before!.runnerId);
@@ -213,10 +242,10 @@ describe("worker component", () => {
     await t.mutation(api.lib.ping, pingArgs());
     await t.mutation(api.lib.stop, { name: "" });
     await t.mutation(internal.monitor.monitor, { name: "" });
-    const worker = await t.run((ctx) => getWorker(ctx, ""));
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
     assert(worker);
     expect(worker.status.kind).toBe("stopped");
-    const state = await t.run((ctx) => getOrCreateWorkerState(ctx, worker));
+    const state = await run(t, (ctx) => getOrCreateWorkerState(ctx, worker));
     expect(state!.monitorId).toBeUndefined();
   });
 

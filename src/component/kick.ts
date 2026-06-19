@@ -1,7 +1,6 @@
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import type { MutationCtx, QueryCtx } from "./_generated/server.js";
-import type { LogMutationCtx } from "./functions.js";
+import type { MutationCtx, QueryCtx } from "./functions.js";
 import {
   type Config,
   DEFAULT_CONFIG,
@@ -42,7 +41,7 @@ export async function getOrCreateWorkerState(
  * `workers` doc and returns.
  */
 export async function ping(
-  ctx: LogMutationCtx,
+  ctx: MutationCtx,
   args: {
     name: string;
     workQuery: string;
@@ -96,7 +95,7 @@ export async function ping(
  * Resume an existing worker (e.g. after `stop`) using its stored handles and
  * config. No-ops if the worker was never created with `ping`.
  */
-export async function start(ctx: LogMutationCtx, name: string): Promise<void> {
+export async function start(ctx: MutationCtx, name: string): Promise<void> {
   const worker = await getWorker(ctx, name);
   if (!worker) return;
   const status = worker.status;
@@ -133,7 +132,7 @@ export async function stop(ctx: MutationCtx, name: string): Promise<void> {
  * - idle    → start a fresh loop (unless there's one scheduled for soon)
  * - running → no-op (work will be picked up imminently).
  */
-async function wake(ctx: LogMutationCtx, worker: Doc<"workers">): Promise<void> {
+async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
   const state = (await ctx.db.get("workerState", worker.stateId)) ?? {
     runnerId: undefined,
     lastWorkTs: 0,

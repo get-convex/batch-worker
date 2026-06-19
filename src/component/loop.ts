@@ -1,7 +1,6 @@
 import { v, type Value } from "convex/values";
 import type { FunctionHandle } from "convex/server";
-import type { MutationCtx } from "./_generated/server.js";
-import { internalMutation } from "./functions.js";
+import { internalMutation, type MutationCtx } from "./functions.js";
 import { runSnapshotQuery } from "./future.js";
 import {
   continueRunning,

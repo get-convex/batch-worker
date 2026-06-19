@@ -9,8 +9,8 @@ import {
   internalQuery as baseInternalQuery,
   mutation as baseMutation,
   query as baseQuery,
-  type MutationCtx,
-  type QueryCtx,
+  type MutationCtx as BaseMutationCtx,
+  type QueryCtx as BaseQueryCtx,
 } from "./_generated/server.js";
 import { createLogger, type Logger } from "./logging.js";
 
@@ -27,6 +27,10 @@ export const internalQuery = customQuery(baseInternalQuery, withLogger);
 export const mutation = customMutation(baseMutation, withLogger);
 export const internalMutation = customMutation(baseInternalMutation, withLogger);
 
-/** Ctx types augmented with `log`, for helpers that log outside the handler. */
-export type LogQueryCtx = QueryCtx & { log: Logger };
-export type LogMutationCtx = MutationCtx & { log: Logger };
+/**
+ * Ctx types for this component's functions: the generated ctx augmented with
+ * the `log` logger injected by the builders above. Import these (not the
+ * `_generated/server` ones) everywhere so every handler and helper has `ctx.log`.
+ */
+export type QueryCtx = BaseQueryCtx & { log: Logger };
+export type MutationCtx = BaseMutationCtx & { log: Logger };
