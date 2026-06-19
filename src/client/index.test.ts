@@ -12,16 +12,14 @@ import {
   mutationGeneric,
   queryGeneric,
 } from "convex/server";
-import { BatchWorker, vBatchQueryArgs, vBatchResult } from "./index.js";
+import { ping, vBatchQueryArgs, vBatchResult } from "./index.js";
 import { components, initConvexTest } from "./setup.test.js";
 
 const schema = defineSchema({
   items: defineTable({ value: v.number() }),
 });
 
-const worker = new BatchWorker(components.batchWorker, {
-  config: { debounceMs: 0 },
-});
+const WORKER = "items";
 
 export const getBatch = internalQueryGeneric({
   args: vBatchQueryArgs,
@@ -52,7 +50,9 @@ export const enqueue = mutationGeneric({
   args: { value: v.number() },
   handler: async (ctx, { value }) => {
     await ctx.db.insert("items", { value });
-    await worker.ping(ctx, {
+    await ping(ctx, components.batchWorker, {
+      name: WORKER,
+      config: { debounceMs: 0 },
       workQuery: testApi.getBatch,
       workerMutation: testApi.processBatch,
     });
@@ -61,17 +61,20 @@ export const enqueue = mutationGeneric({
 
 export const status = queryGeneric({
   args: {},
-  handler: async (ctx) => worker.status(ctx),
+  handler: async (ctx) =>
+    ctx.runQuery(components.batchWorker.lib.status, { name: WORKER }),
 });
 
 export const startWorker = mutationGeneric({
   args: {},
-  handler: async (ctx) => worker.start(ctx),
+  handler: async (ctx) =>
+    ctx.runMutation(components.batchWorker.lib.start, { name: WORKER }),
 });
 
 export const stopWorker = mutationGeneric({
   args: {},
-  handler: async (ctx) => worker.stop(ctx),
+  handler: async (ctx) =>
+    ctx.runMutation(components.batchWorker.lib.stop, { name: WORKER }),
 });
 
 export const remaining = queryGeneric({

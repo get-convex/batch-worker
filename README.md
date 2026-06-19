@@ -12,8 +12,7 @@ You bring two functions:
 - A **work query** that returns the next batch of work, or explicitly go idle.
 - A **worker mutation** that processes that batch.
 
-After inserting work, call `worker.ping(...)`. The component takes care of the
-rest:
+After inserting work, call `ping(...)`. The component takes care of the rest:
 
 - Runs exactly one loop at a time per named Worker.
 - Supports debouncing bursts so they batch together.
@@ -58,11 +57,9 @@ args.
 
 ```ts
 import { v } from "convex/values";
-import { BatchWorker, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
+import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api";
 import { internalMutation, internalQuery, mutation } from "./_generated/server";
-
-const worker = new BatchWorker(components.batchWorker);
 
 const BATCH_SIZE = 10;
 
@@ -71,7 +68,8 @@ export const addEvent = mutation({
   args: { value: v.number() },
   handler: async (ctx, { value }) => {
     await ctx.db.insert("events", { value });
-    await worker.ping(ctx, {
+    await ping(ctx, components.batchWorker, {
+      name: "events", // distinct names give you independent queues
       workQuery: internal.example.getBatch,
       workerMutation: internal.example.processBatch,
     });
@@ -110,13 +108,6 @@ The component **does not clean up your work for you** — your worker mutation i
 responsible for deleting (or marking complete / advancing past) the rows it
 processed, otherwise the next query will return them again.
 
-### `ping` vs `start`
-
-- **`ping`** carries the query/mutation + config. It creates the worker on first
-  call and resumes an idle worker thereafter — call it right after inserting work. No-ops if the worker is stopped.
-- **`start({ name })`** resumes a stopped worker (e.g. after `stop`) using its
-  stored query/mutation. No-ops if the worker was never `ping`ed. Not necessary unless `stop` was called explicitly.
-
 ### Steering the loop dynamically
 
 Your worker mutation may return `{ debounceMs }` to throttle the
@@ -148,11 +139,11 @@ return {
 
 ### Multiple queues
 
-Pass a `name` to run independent workers off the same component instance. The
-worker's name is passed to your query as `args.name`:
+Give each queue a distinct `name`. The name is passed to your query as
+`args.name`, so one query/mutation pair can serve many queues:
 
 ```ts
-await worker.ping(ctx, {
+await ping(ctx, components.batchWorker, {
   name: "emails",
   workQuery: internal.email.getBatch,
   workerMutation: internal.email.send,
@@ -161,10 +152,14 @@ await worker.ping(ctx, {
 
 ### Configuration
 
-Defaults can be set on the `BatchWorker` and overridden per `ping` call:
+Pass `config` to `ping` (it's stored on the worker and refreshed when it
+changes):
 
 ```ts
-const worker = new BatchWorker(components.batchWorker, {
+await ping(ctx, components.batchWorker, {
+  name: "events",
+  workQuery: internal.example.getBatch,
+  workerMutation: internal.example.processBatch,
   config: {
     debounceMs: 100, // wait before the first batch so a burst accumulates
     // Schedule the liveness monitor this long after the loop's next run.
@@ -178,16 +173,25 @@ const worker = new BatchWorker(components.batchWorker, {
 
 Log level is set via the component's `LOG_LEVEL` env var (see Installation).
 
-### Status & stopping
+### Stopping & resuming
+
+`stop` halts processing entirely: the loop stops and `ping` is ignored, so no
+new work is picked up. `start` resumes it (reusing the last `ping`ed
+query/mutation). Call them on the component:
 
 ```ts
-// In a query:
-const status = await worker.status(ctx);
-// { kind: "idle" | "running" | "stopped" } | null
-
-// In a mutation:
-await worker.stop(ctx); // halt the loop; only start() resumes it (ping won't)
+await ctx.runMutation(components.batchWorker.lib.stop, { name: "events" });
+// ...later, when you want it processing again:
+await ctx.runMutation(components.batchWorker.lib.start, { name: "events" });
 ```
+
+`status` reports the run state, including whether the worker is `stopped`.
+
+### `ping` vs `start`
+
+- **`ping`** creates the worker on first call and resumes it when it's idle.
+  It's a no-op while the loop is running or stopped.
+- **`start`** resumes a `stopped` worker, and only `start` will — `ping` won't.
 
 See the full working example in [example.ts](./example/convex/example.ts).
 

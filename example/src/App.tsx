@@ -17,9 +17,9 @@ function App() {
       <div className="card">
         <p style={{ lineHeight: 1.6 }}>
           Each event you add is inserted into a queue table. After inserting we
-          call <code>worker.ping</code>, and the component runs a single
-          background loop that batches the events and sums them — restarting
-          itself if it ever dies, and going idle when the queue drains.
+          call <code>ping</code>, and the component runs a single background loop
+          that batches the events and sums them — restarting itself if it ever
+          dies, and going idle when the queue drains.
         </p>
 
         <div style={{ display: "flex", gap: "0.5rem", margin: "1rem 0" }}>

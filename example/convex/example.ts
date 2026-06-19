@@ -1,9 +1,5 @@
 import { v } from "convex/values";
-import {
-  BatchWorker,
-  vBatchQueryArgs,
-  vBatchResult,
-} from "@convex-dev/batch-worker";
+import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -12,9 +8,9 @@ import {
   query,
 } from "./_generated/server.js";
 
-// One worker instance per component. Use distinct `name`s if you want several
-// independent queues backed by the same component.
-const worker = new BatchWorker(components.batchWorker);
+// Use distinct `name`s if you want several independent queues backed by the
+// same component.
+const WORKER = "events";
 
 const BATCH_SIZE = 10;
 
@@ -26,7 +22,8 @@ export const addEvent = mutation({
   args: { value: v.number() },
   handler: async (ctx, { value }) => {
     await ctx.db.insert("events", { value });
-    await worker.ping(ctx, {
+    await ping(ctx, components.batchWorker, {
+      name: WORKER,
       workQuery: internal.example.getBatch,
       workerMutation: internal.example.processBatch,
     });
@@ -101,7 +98,9 @@ export const getTotals = query({
   },
 });
 
+// start/stop/status take only a `{ name }`, so call them on the component.
 export const workerStatus = query({
   args: {},
-  handler: async (ctx) => worker.status(ctx),
+  handler: async (ctx) =>
+    ctx.runQuery(components.batchWorker.lib.status, { name: WORKER }),
 });

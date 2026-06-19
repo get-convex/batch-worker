@@ -9,8 +9,9 @@ import {
 import { vConfig, vStatus } from "./shared.js";
 
 /**
- * The public component API. Apps normally call these through the `BatchWorker`
- * client wrapper (see `@convex-dev/batch-worker`) rather than directly.
+ * The public component API. Apps call `ping` from `@convex-dev/batch-worker`
+ * (it creates the function handles); `start`/`stop`/`status` take only a
+ * `{ name }` and can be called here directly.
  */
 
 export const ping = mutation({
