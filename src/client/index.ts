@@ -10,7 +10,9 @@ import type { ComponentApi } from "../component/_generated/component.js";
 import {
   type BatchQueryArgs,
   type BatchResult,
-  type Config,
+  type ConfigOverrides,
+  normalizeConfig,
+  type WorkerResult,
 } from "../component/shared.js";
 
 export {
@@ -19,6 +21,7 @@ export {
   vWorkerResult,
   type BatchResult,
   type BatchQueryArgs,
+  type ConfigOverrides,
   type WorkerResult,
 } from "../component/shared.js";
 export type {
@@ -70,10 +73,10 @@ export async function ping<Batch extends DefaultFunctionArgs>(
       "mutation",
       "internal",
       Batch,
-      { debounceMs?: number } | null | void
+      WorkerResult | void
     >;
     /** Loop configuration. */
-    config?: Partial<Config>;
+    config?: ConfigOverrides | undefined;
   },
 ): Promise<void> {
   const [workQuery, workerMutation] = await Promise.all([
@@ -84,7 +87,7 @@ export async function ping<Batch extends DefaultFunctionArgs>(
     name: args.name,
     workQuery,
     workerMutation,
-    config: args.config ?? {},
+    config: normalizeConfig(args.config),
   });
 }
 
