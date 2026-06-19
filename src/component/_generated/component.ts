@@ -28,10 +28,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         {
-          config?: {
-            debounceMs?: number;
-            monitorLagMs?: number;
-          };
+          config?: { debounceMs?: number; monitorLagMs?: number };
           name: string;
           workQuery: string;
           workerMutation: string;
