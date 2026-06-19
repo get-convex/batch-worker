@@ -34,6 +34,22 @@ export const vConfig = v.object({
   monitorLagMs: v.number(),
 });
 export type Config = Infer<typeof vConfig>;
+export type ConfigOverrides = {
+  [K in keyof Config]?: Config[K] | undefined;
+};
+
+export function normalizeConfig(
+  config: ConfigOverrides | undefined,
+): Partial<Config> {
+  const normalized: Partial<Config> = {};
+  if (config?.debounceMs !== undefined) {
+    normalized.debounceMs = config.debounceMs;
+  }
+  if (config?.monitorLagMs !== undefined) {
+    normalized.monitorLagMs = config.monitorLagMs;
+  }
+  return normalized;
+}
 
 export const DEFAULT_CONFIG: Config = {
   debounceMs: 0,
@@ -81,7 +97,7 @@ export type BatchQueryArgs = Infer<typeof vBatchQueryArgs>;
  */
 export function vBatchResult<B extends Validator<any, "required", any>>(
   batch: B,
-) {
+): Validator<BatchResult<Infer<B>>, "required", any> {
   return v.union(
     v.object({ kind: v.optional(v.literal("work")), batch }),
     v.object({
@@ -102,7 +118,7 @@ export function vBatchResult<B extends Validator<any, "required", any>>(
        */
       timeoutMs: v.optional(v.number()),
     }),
-  );
+  ) as Validator<BatchResult<Infer<B>>, "required", any>;
 }
 
 /**
@@ -112,29 +128,31 @@ export function vBatchResult<B extends Validator<any, "required", any>>(
  * @typeParam Batch - the shape passed to your worker mutation.
  */
 export type BatchResult<Batch> =
-  | { kind: "work"; batch: Batch }
+  | { kind?: "work" | undefined; batch: Batch }
   | {
       kind: "idle";
       /**
        * How long the loop keeps polling an idle queue before going fully idle.
        * Helps avoid unnecessary workers state write conflicts.
        */
-      cooldownMs?: number;
+      cooldownMs?: number | undefined;
       /**
        * How long to wait between running again while cooling down.
        */
-      pollIntervalMs?: number;
+      pollIntervalMs?: number | undefined;
       /**
        * The maximum time it should go idle for when no pings occur.
        */
-      timeoutMs?: number;
+      timeoutMs?: number | undefined;
     };
 
 /**
  * What a worker mutation may return to steer the loop. Returning nothing (or
  * null) re-runs immediately (drain as fast as possible).
  */
-export const vWorkerResult = v.union(
+export type WorkerResult = null | { debounceMs?: number | undefined };
+
+export const vWorkerResult: Validator<WorkerResult, "required", any> = v.union(
   v.null(),
   v.object({
     /**
@@ -143,5 +161,4 @@ export const vWorkerResult = v.union(
      */
     debounceMs: v.optional(v.number()),
   }),
-);
-export type WorkerResult = Infer<typeof vWorkerResult>;
+) as Validator<WorkerResult, "required", any>;

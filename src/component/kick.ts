@@ -2,11 +2,12 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./functions.js";
 import {
-  type Config,
+  type ConfigOverrides,
   DEFAULT_CONFIG,
   MONITOR_REFRESH_WITHIN_MS,
   RUNNING_THRESHOLD_MS,
   MONITOR_LAG_MS,
+  normalizeConfig,
 } from "./shared.js";
 
 export async function getWorker(ctx: QueryCtx, name: string) {
@@ -46,10 +47,11 @@ export async function ping(
     name: string;
     workQuery: string;
     workerMutation: string;
-    config?: Partial<Config> | undefined;
+    config?: ConfigOverrides | undefined;
   },
 ): Promise<void> {
   const worker = await getWorker(ctx, args.name);
+  const config = normalizeConfig(args.config);
 
   if (!worker) {
     const stateId = await ctx.db.insert("workerState", {
@@ -60,11 +62,11 @@ export async function ping(
       name: args.name,
       workQuery: args.workQuery,
       workerMutation: args.workerMutation,
-      config: args.config ?? {},
+      config,
       status: { kind: "running" },
       stateId,
     });
-    const delayMs = args.config?.debounceMs ?? DEFAULT_CONFIG.debounceMs;
+    const delayMs = config.debounceMs ?? DEFAULT_CONFIG.debounceMs;
     const worker = (await ctx.db.get("workers", workerId))!;
     await scheduleLoopRun(ctx, worker, { delayMs });
     return;
@@ -73,14 +75,14 @@ export async function ping(
   if (
     args.workQuery !== worker.workQuery ||
     args.workerMutation !== worker.workerMutation ||
-    (args.config &&
+    (args.config !== undefined &&
       (args.config.debounceMs !== worker.config.debounceMs ||
         args.config.monitorLagMs !== worker.config.monitorLagMs))
   ) {
     worker.workQuery = args.workQuery;
     worker.workerMutation = args.workerMutation;
-    if (args.config) {
-      worker.config = args.config;
+    if (args.config !== undefined) {
+      worker.config = config;
     }
     await ctx.db.replace("workers", worker._id, worker);
   }
@@ -165,7 +167,7 @@ export async function continueRunning(
   ctx: MutationCtx,
   worker: Doc<"workers">,
   delayMs: number,
-  lastWorkTs?: number,
+  lastWorkTs?: number | undefined,
 ): Promise<void> {
   if (worker.status.kind !== "running") {
     await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
@@ -184,7 +186,7 @@ export async function scheduleWaiting(
   ctx: MutationCtx,
   worker: Doc<"workers">,
   timeoutMs: number,
-  lastWorkTs?: number,
+  lastWorkTs?: number | undefined,
 ): Promise<void> {
   await scheduleLoopRun(ctx, worker, {
     delayMs: timeoutMs,
