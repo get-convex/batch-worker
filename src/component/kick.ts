@@ -1,7 +1,7 @@
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { env, type MutationCtx, type QueryCtx } from "./_generated/server.js";
-import { createLogger } from "./logging.js";
+import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import type { LogMutationCtx } from "./functions.js";
 import {
   type Config,
   DEFAULT_CONFIG,
@@ -42,7 +42,7 @@ export async function getOrCreateWorkerState(
  * `workers` doc and returns.
  */
 export async function ping(
-  ctx: MutationCtx,
+  ctx: LogMutationCtx,
   args: {
     name: string;
     workQuery: string;
@@ -86,8 +86,7 @@ export async function ping(
     await ctx.db.replace("workers", worker._id, worker);
   }
   if (worker.status.kind !== "idle") {
-    const console = createLogger(env.LOG_LEVEL);
-    console.debug(`[ping] "${worker.name}" ${worker.status.kind} — no-op`);
+    ctx.log.debug(`[ping] "${worker.name}" ${worker.status.kind} — no-op`);
     return;
   }
   await wake(ctx, worker);
@@ -97,13 +96,12 @@ export async function ping(
  * Resume an existing worker (e.g. after `stop`) using its stored handles and
  * config. No-ops if the worker was never created with `ping`.
  */
-export async function start(ctx: MutationCtx, name: string): Promise<void> {
+export async function start(ctx: LogMutationCtx, name: string): Promise<void> {
   const worker = await getWorker(ctx, name);
   if (!worker) return;
   const status = worker.status;
   if (status.kind !== "stopped") {
-    const console = createLogger(env.LOG_LEVEL);
-    console.debug(`[start] "${worker.name}" ${status.kind} — no-op`);
+    ctx.log.debug(`[start] "${worker.name}" ${status.kind} — no-op`);
     return;
   }
   await wake(ctx, worker);
@@ -135,8 +133,7 @@ export async function stop(ctx: MutationCtx, name: string): Promise<void> {
  * - idle    → start a fresh loop (unless there's one scheduled for soon)
  * - running → no-op (work will be picked up imminently).
  */
-async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
-  const console = createLogger(env.LOG_LEVEL);
+async function wake(ctx: LogMutationCtx, worker: Doc<"workers">): Promise<void> {
   const state = (await ctx.db.get("workerState", worker.stateId)) ?? {
     runnerId: undefined,
     lastWorkTs: 0,
@@ -149,12 +146,12 @@ async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
     loop?.state.kind === "pending" &&
     loop.scheduledTime < now + RUNNING_THRESHOLD_MS
   ) {
-    console.debug(
+    ctx.log.debug(
       `[wake] "${worker.name}" scheduled for immediate execution — no-op`,
     );
     return;
   }
-  console.debug(`[wake] "${worker.name}" interrupting wait`);
+  ctx.log.debug(`[wake] "${worker.name}" interrupting wait`);
   if (loop) await cancelIfPending(ctx, loop._id);
   // Possibly wait for a debounce window before running
   const delayMs = worker.config.debounceMs ?? DEFAULT_CONFIG.debounceMs;
