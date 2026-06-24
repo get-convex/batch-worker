@@ -1,7 +1,8 @@
 import { v, type Value } from "convex/values";
 import type { FunctionHandle } from "convex/server";
+import { env } from "./_generated/server.js";
 import { internalMutation, type MutationCtx } from "./functions.js";
-import { runSnapshotQuery } from "./future.js";
+import { createLogger } from "./logging.js";
 import {
   continueRunning,
   getWorker,
@@ -57,13 +58,13 @@ export const loop = internalMutation({
       BatchResult<Value>
     >;
 
-    // Snapshot read: no OCC dependency, so concurrent inserts while we drain
-    // don't force this loop to retry. If the query or worker mutation throws,
-    // this loop fails (and doesn't reschedule) — the monitor restarts it.
-    const result = (await runSnapshotQuery(
-      queryRef,
-      queryArgs,
-    )) as BatchResult<Value>;
+    // Stale snapshot read: no OCC dependency, so concurrent inserts while we
+    // drain don't force this loop to retry. If the query or worker mutation
+    // throws, this loop fails (and doesn't reschedule) — the monitor restarts
+    // it.
+    const result = await ctx.runQuery(queryRef, queryArgs, {
+      useStaleSnapshot: true,
+    });
 
     // ── There's work: run the worker mutation, then reschedule. ──
     if (result && "batch" in result) {
