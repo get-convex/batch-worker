@@ -12,18 +12,20 @@ You bring two functions:
 - A **work query** that returns the next batch of work, or explicitly go idle.
 - A **worker mutation** that processes that batch.
 
-After inserting work, call `ping(...)`. The component takes care of the rest:
+Call `ping(...)` once to create the worker. The component takes care of the rest,
+built on Convex's **retry-on-change**: when the queue drains the loop *suspends*
+instead of polling, and re-runs reactively the moment new work is inserted.
 
 - Runs exactly one loop at a time per named Worker.
 - Supports debouncing bursts so they batch together.
-- Keeps the loop "warm" with a short polling cooldown so a trickle of new work
-  does not thrash the running status.
-- uses snapshot reads while draining so concurrent inserts don't cause OCC
-  retries, and confirms with a real read before going idle so nothing is lost,
-- goes idle when the queue drains, and restarts automatically the next time you
-  ping,
-- monitors the loop and **restarts it if it ever dies** (e.g. an unexpected
-  error), logging the failure so you can alert on it.
+- Uses snapshot reads while draining so concurrent inserts don't cause OCC
+  retries, and confirms with a real read before suspending so nothing is lost.
+- **Suspends when the queue drains** (holding a subscription to your work
+  query), and **wakes reactively** when you insert new work — no polling, no
+  cooldown. An optional `timeoutMs` bounds the wait.
+- Survives backend restarts (suspended loops are durable) and **retries instead
+  of dying** if your work query or worker mutation throws, logging the failure
+  so you can alert on it.
 
 This is the pattern behind components like
 [Workpool](https://github.com/get-convex/workpool) — extracted so you can build
@@ -63,7 +65,10 @@ import { internalMutation, internalQuery, mutation } from "./_generated/server";
 
 const BATCH_SIZE = 10;
 
-// Insert work, then make sure the loop is running.
+// Insert work, then make sure the loop exists. `ping` is only needed to create
+// (or `start`) the worker — once it's running, inserting work wakes the
+// suspended loop reactively, so pinging on every insert is optional (and a
+// cheap no-op while it runs).
 export const addEvent = mutation({
   args: { value: v.number() },
   handler: async (ctx, { value }) => {
@@ -120,19 +125,17 @@ return {
 };
 ```
 
-Similarly, when there's no work your query can return
-`{ kind: "idle", timeoutMs }` to ensure it wakes up after some time even if `ping` is not called. A ping still wakes it immediately.
+Similarly, when there's no work your query returns `{ kind: "idle" }` and the
+loop suspends until new work is inserted. Add a `timeoutMs` to also wake after a
+fixed time even if no new work arrives (e.g. when you know the next item is due):
 
 ```ts
 return {
   kind: "idle",
-  // Keep polling this long before transitioning to idle.
-  cooldownMs: 10_000,
-  // How often to poll while cooling down.
-  pollIntervalMs: 250,
-  // After cooling down, wake again after at most this long even if no ping
-  // arrives. Measured from this query response, so re-run it each query if you
-  // want it to track a fixed deadline. A ping still wakes it sooner.
+  // Wake and re-run the query by this long from now at the latest, even with no
+  // new work. Inserting work wakes it sooner. Measured from this query response,
+  // so re-run it each query if you want it to track a fixed deadline. Omit to
+  // suspend until new work arrives.
   timeoutMs: 60_000,
 };
 ```
@@ -162,11 +165,9 @@ await ping(ctx, components.batchWorker, {
   workerMutation: internal.example.processBatch,
   config: {
     debounceMs: 100, // wait before the first batch so a burst accumulates
-    // Schedule the liveness monitor this long after the loop's next run.
-    // Default 1 minute, minimum 10 seconds. Also the retry cadence if your
-    // work query or worker mutation throws (the loop dies; the monitor restarts
-    // it).
-    monitorLagMs: 15_000,
+    // If your work query or worker mutation throws, the loop suspends and
+    // retries after this long instead of dying. Default 1 minute.
+    retryBackoffMs: 15_000,
   },
 });
 ```
@@ -189,8 +190,9 @@ await ctx.runMutation(components.batchWorker.lib.start, { name: "events" });
 
 ### `ping` vs `start`
 
-- **`ping`** creates the worker on first call and resumes it when it's idle.
-  It's a no-op while the loop is running or stopped.
+- **`ping`** creates the worker on first call. It's a no-op afterward — while the
+  loop is running (or suspended) new work wakes it reactively, and while
+  `stopped` it's ignored.
 - **`start`** resumes a `stopped` worker, and only `start` will — `ping` won't.
 
 See the full working example in [example.ts](./example/convex/example.ts).
@@ -210,19 +212,24 @@ Run `npm run dev:frontend` to interact with it through a Vite app.
 
 ### How it works
 
-| Table         | Written by                          | Read by                 |
-| ------------- | ----------------------------------- | ----------------------- |
-| `workers`     | `ping`/`start`/`loop` (transitions) | `ping`/`start`, monitor |
-| `workerState` | `loop` (every iteration)            | `loop`, monitor         |
+A single `workers` table holds one row per named worker (handles, config, and
+run-status: `running` / `stopped`). The `loop` is a scheduled, top-level
+mutation that runs one iteration and then decides how to continue:
 
-The high-churn loop state lives in `workerState` (generation, heartbeat, the
-scheduled runner, and the monitor), separate from the rarely-written `workers`
-doc (which holds the handles, config, and run-status: `idle` / `running` /
-`stopped`, plus a pointer to its `workerState`). That lets `ping`/`start` —
-which you call on every insert — read `workers` and return without conflicting
-(OCC) with the fast-looping loop. A monotonic `generation` (in `workerState`)
-guarantees only one loop chain runs at a time: a superseded loop sees a
-mismatched generation and exits. `workerState` is looked up by id and
-re-created if it's ever missing. The liveness monitor is scheduled
-~`monitorLagMs` _after_ the loop's next run and pushed back as the loop keeps
-running, so it only fires (and restarts the loop) if the loop actually died.
+- **Work available** — it runs the worker mutation and reschedules itself to
+  drain the rest (a committed `scheduler.runAfter`). The scan uses a _snapshot_
+  read so concurrent inserts don't OCC-conflict while draining.
+- **Queue empty** — it re-reads the work query with a real dependency (catching
+  a racing insert and subscribing to the query's read set) and then **suspends**
+  via Convex's retry-on-change (`requestRetry`). Inserting new work invalidates
+  that read set and re-runs the loop reactively; an optional `timeoutMs` bounds
+  the wait. Suspended loops are durable across backend restarts.
+- **Failure** — if the work query or worker mutation throws, the loop suspends
+  and retries after `retryBackoffMs` instead of dying.
+
+At most one continuation exists per worker at any time — a scheduled run on the
+work path, or a single suspended run on the idle path — so there's no generation
+bookkeeping and no separate liveness monitor. `start`/`stop`/`create` mutually
+exclude via OCC on the `workers` doc, and `stop` halts even a suspended loop:
+the loop reads the `workers` doc every iteration, so flipping its status to
+`stopped` invalidates the suspended loop's read set, waking it to exit.

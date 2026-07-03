@@ -4,17 +4,10 @@ export const MS = 1;
 export const SECOND = 1000 * MS;
 export const MINUTE = 60 * SECOND;
 
-// Delays at or below this are treated as the loop being "running" (a ping is a
-// no-op — the work will be picked up imminently). Longer delays put the loop in
-// a "waiting" state that a ping can interrupt. Also the boundary between the
-// short cooldown poll and a long sleep.
-export const RUNNING_THRESHOLD_MS = 1 * SECOND;
-// The monitor is scheduled this long after the loop's next run, so it only
-// fires if the loop fails to run (and reschedule the monitor) on time.
-export const MONITOR_LAG_MS = 60 * SECOND;
-// Refresh the monitor when it would otherwise fire within this window — keeps
-// it trailing the loop without rescheduling on every iteration.
-export const MONITOR_REFRESH_WITHIN_MS = 10 * SECOND;
+// When the loop's work query or worker mutation throws, the loop suspends and
+// retries after this long by default (the retry-on-change deadline). Replaces
+// the old scheduled monitor's restart cadence.
+export const RETRY_BACKOFF_MS = 60 * SECOND;
 
 /**
  * Configuration for a worker's main loop.
@@ -26,32 +19,29 @@ export const vConfig = v.object({
    */
   debounceMs: v.number(),
   /**
-   * How long after the loop's scheduled run the monitor is scheduled. The
-   * monitor restarts the loop if it didn't run (and push the monitor back) by
-   * then — this is also the effective retry cadence when the work query or
-   * worker mutation throws.
+   * How long the loop waits before retrying after its work query or worker
+   * mutation throws. The loop suspends (retry-on-change) and re-runs after this
+   * deadline, so a transient failure doesn't kill the worker.
    */
-  monitorLagMs: v.number(),
+  retryBackoffMs: v.number(),
 });
 export type Config = Infer<typeof vConfig>;
 
 export const DEFAULT_CONFIG: Config = {
   debounceMs: 0,
-  monitorLagMs: MONITOR_LAG_MS,
+  retryBackoffMs: RETRY_BACKOFF_MS,
 };
 
 /**
- * The run state of a worker, on the `workers` doc. Written only on transitions
- * (and the occasional monitor refresh), so `ping`/`start` can read it on every
- * insert without OCC-conflicting with the fast-looping loop.
+ * The run state of a worker, on the `workers` doc.
  *
- * - `idle`: no loop scheduled. `ping`/`start` must start it.
- * - `running`: the loop is executing or scheduled to run imminently
- *   (≤ RUNNING_THRESHOLD_MS). A ping is a no-op — work is picked up soon.
- * - `waiting`: the loop is sleeping until `runAtMs`.
+ * - `running`: the loop is live — scheduled, executing, or suspended (waiting
+ *   for new work to invalidate its read set, or for an idle timeout). A `ping`
+ *   is a no-op; inserting work wakes the suspended loop reactively.
+ * - `stopped`: the loop was halted by `stop`. `ping` is ignored; only `start`
+ *   resumes it.
  */
 export const vStatus = v.union(
-  v.object({ kind: v.literal("idle") }),
   v.object({ kind: v.literal("running") }),
   v.object({ kind: v.literal("stopped") }),
 );
@@ -87,18 +77,9 @@ export function vBatchResult<B extends Validator<any, "required", any>>(
     v.object({
       kind: v.literal("idle"),
       /**
-       * How long the loop keeps polling an idle queue before going fully idle.
-       * Helps avoid unnecessary workers state write conflicts.
-       */
-      cooldownMs: v.optional(v.number()),
-      /**
-       * How long to wait between running the query again while cooling down.
-       */
-      pollIntervalMs: v.optional(v.number()),
-      /**
-       * Once cooled down, run again by this long from now at the latest. A ping
-       * interrupts and runs sooner. If omitted, the loop goes fully idle and
-       * only a ping/start wakes it.
+       * Wake and re-run the query again by this long from now at the latest,
+       * even if no new work arrives. Inserting work wakes the loop sooner
+       * (reactively). If omitted, the loop suspends until new work arrives.
        */
       timeoutMs: v.optional(v.number()),
     }),
@@ -116,16 +97,9 @@ export type BatchResult<Batch> =
   | {
       kind: "idle";
       /**
-       * How long the loop keeps polling an idle queue before going fully idle.
-       * Helps avoid unnecessary workers state write conflicts.
-       */
-      cooldownMs?: number;
-      /**
-       * How long to wait between running again while cooling down.
-       */
-      pollIntervalMs?: number;
-      /**
-       * The maximum time it should go idle for when no pings occur.
+       * Wake and re-run by this long from now at the latest, even without new
+       * work. Inserting work wakes the loop sooner. Omit to suspend until new
+       * work arrives.
        */
       timeoutMs?: number;
     };
