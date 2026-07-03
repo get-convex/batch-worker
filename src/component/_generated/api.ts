@@ -13,7 +13,6 @@ import type * as kick from "../kick.js";
 import type * as lib from "../lib.js";
 import type * as logging from "../logging.js";
 import type * as loop from "../loop.js";
-import type * as monitor from "../monitor.js";
 import type * as shared from "../shared.js";
 
 import type {
@@ -29,7 +28,6 @@ const fullApi: ApiFromModules<{
   lib: typeof lib;
   logging: typeof logging;
   loop: typeof loop;
-  monitor: typeof monitor;
   shared: typeof shared;
 }> = anyApi as any;
 

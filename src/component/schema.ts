@@ -3,10 +3,11 @@ import { v } from "convex/values";
 import { vConfig, vStatus } from "./shared.js";
 
 export default defineSchema({
-  // One row per named worker. Written rarely — only on create/reconfigure,
-  // run-state transitions, and the occasional monitor refresh. This lets
-  // `ping`/`start` read it on every insert without OCC-conflicting with the
-  // fast-looping `loop`, which doesn't write this doc while actively running.
+  // One row per named worker. The loop reads it every iteration (for the
+  // handles + status) and it's written only on create/reconfigure and
+  // run-state transitions (start/stop). The loop itself never writes it, so a
+  // live loop reading it doesn't OCC-conflict with the rare `ping`/`start`
+  // writes.
   workers: defineTable({
     name: v.string(),
     // Function handles (created in the app via createFunctionHandle).
@@ -14,25 +15,5 @@ export default defineSchema({
     workerMutation: v.string(),
     config: vConfig.partial(),
     status: vStatus,
-    stateId: v.id("workerState"),
   }).index("name", ["name"]),
-
-  // One row per named worker, owned and written by `loop` on every iteration
-  // (and by `ping`/`start` only while the loop is idle or interruptibly
-  // waiting). Kept separate from `workers` so its high churn doesn't conflict
-  // with the per-insert `ping`/`start` read.
-  workerState: defineTable({
-    // Bumped each iteration & on every (re)start. A scheduled loop whose
-    // generation no longer matches has been superseded and exits.
-    generation: v.int64(),
-    // When the loop last saw work; drives the cooldown window.
-    lastWorkTs: v.number(),
-    // The currently-scheduled loop invocation, checked by the monitor and
-    // canceled when a ping interrupts a wait.
-    runnerId: v.optional(v.id("_scheduled_functions")),
-    // The monitor that restarts the loop if it dies, scheduled to fire
-    // `monitorLagMs` after the loop's next run and refreshed as it approaches.
-    monitorId: v.optional(v.id("_scheduled_functions")),
-    monitorRunAtMs: v.optional(v.number()),
-  }),
 });

@@ -1,61 +1,58 @@
 import { v, type Value } from "convex/values";
 import type { FunctionHandle } from "convex/server";
-import {
-  env,
-  internalMutation,
-  type MutationCtx,
-} from "./_generated/server.js";
+import { env, internalMutation } from "./_generated/server.js";
 import { runSnapshotQuery } from "./future.js";
 import { createLogger } from "./logging.js";
+import { getWorker, scheduleLoop } from "./kick.js";
 import {
-  continueRunning,
-  getWorker,
-  getOrCreateWorkerState,
-  goIdle,
-  scheduleWaiting,
-} from "./kick.js";
-import {
-  RUNNING_THRESHOLD_MS,
+  DEFAULT_CONFIG,
   type BatchQueryArgs,
   type BatchResult,
   type WorkerResult,
 } from "./shared.js";
 
-const DEFAULT_POLL_INTERVAL_MS = 200;
-const DEFAULT_COOLDOWN_MS = 2000;
+// Raw syscall for the (internal, unstable) retry-on-change feature. There's no
+// importable class, only this syscall, which uncatchably aborts execution: the
+// mutation's writes are discarded and it re-runs when its read set is
+// invalidated or the optional deadline passes. Only valid from a top-level
+// (non-nested) scheduled mutation — which `loop` is.
+declare const Convex: { syscall: (op: string, jsonArgs: string) => string };
+
+function requestRetry(options: { timeoutMs?: number } = {}): never {
+  Convex.syscall("1.0/requestRetry", JSON.stringify(options));
+  throw new Error("unreachable: requestRetry terminates execution");
+}
 
 /**
- * The worker's main loop. At most one is scheduled/running per worker, enforced
- * by the `generation` check: a stale scheduled loop (superseded by a newer
- * (re)start or the monitor) exits silently.
+ * The worker's main loop — a scheduled, top-level mutation. Each run:
+ *  - scans for work with a *snapshot* read (no OCC dependency while draining),
+ *  - if there's a batch: runs the worker mutation and reschedules itself
+ *    (committing this transaction),
+ *  - if the snapshot looks idle: re-reads with a real (dependency-taking) query
+ *    to catch a racing insert and, crucially, to put the work query's reads
+ *    into this transaction's read set, then **suspends** via `requestRetry`.
+ *    Inserting new work invalidates that read set and reactively re-runs the
+ *    loop; a `timeoutMs` from the query bounds the wait.
  *
- * Each iteration runs the work query as a *snapshot* read (no OCC dependency),
- * runs the worker mutation if there's a batch, then reschedules itself:
- *  - more work / no result hint → run again immediately,
- *  - mutation returned debounce/timeout → wait (interruptible) accordingly,
- *  - query reported idle with a timeout → sleep until then,
- *  - query idle within cooldown → poll,
- *  - cooldown elapsed → confirm with a real (dependency) read, then go idle.
+ * At most one continuation exists per worker at a time (a scheduled run on the
+ * work path, or a single suspended run on the idle path), so no generation
+ * bookkeeping is needed. If the work query or worker mutation throws, the loop
+ * suspends and retries after `retryBackoffMs` instead of dying.
  */
 export const loop = internalMutation({
-  args: { name: v.string(), generation: v.int64() },
-  handler: async (ctx, { name, generation }) => {
-    const worker = await getWorker(ctx, name);
-    const state = worker && (await getOrCreateWorkerState(ctx, worker));
+  args: { name: v.string() },
+  handler: async (ctx, { name }) => {
     const console = createLogger(env.LOG_LEVEL);
-    if (!worker || !state) {
-      console.debug(`[loop] "${name}" worker not found or state missing`);
+    const worker = await getWorker(ctx, name);
+    if (!worker) {
+      console.debug(`[loop] "${name}" worker not found — exiting`);
       return; // worker was deleted
     }
-
-    if (state.generation !== generation) {
-      console.debug(
-        `[loop] "${name}" superseded (gen ${generation} !== ${state.generation})`,
-      );
-      return;
+    if (worker.status.kind === "stopped") {
+      console.debug(`[loop] "${name}" stopped — exiting`);
+      return; // stop() halted us; only start() resumes
     }
 
-    const now = Date.now();
     const queryArgs: BatchQueryArgs = { name };
     const queryRef = worker.workQuery as unknown as FunctionHandle<
       "query",
@@ -63,72 +60,62 @@ export const loop = internalMutation({
       BatchResult<Value>
     >;
 
-    // Snapshot read: no OCC dependency, so concurrent inserts while we drain
-    // don't force this loop to retry. If the query or worker mutation throws,
-    // this loop fails (and doesn't reschedule) — the monitor restarts it.
-    const result = (await runSnapshotQuery(
-      queryRef,
-      queryArgs,
-    )) as BatchResult<Value>;
+    try {
+      // Snapshot read: no OCC dependency, so concurrent inserts while we drain
+      // don't force this loop to retry.
+      const snap = (await runSnapshotQuery(
+        queryRef,
+        queryArgs,
+      )) as BatchResult<Value>;
 
-    // ── There's work: run the worker mutation, then reschedule. ──
-    if (result && "batch" in result) {
-      const mutationRef = worker.workerMutation as unknown as FunctionHandle<
-        "mutation",
-        any,
-        WorkerResult
-      >;
-      const ret = await ctx.runMutation(mutationRef, result.batch);
-      const debounceMs = ret?.debounceMs ?? 0;
-      await continueRunning(ctx, worker, debounceMs, now);
-      return;
-    }
-
-    // —— No work - before going idle or setting a timeout, cool down. ——
-    const pollIntervalMs = result.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-    if (now < state.lastWorkTs + (result.cooldownMs ?? DEFAULT_COOLDOWN_MS)) {
-      await continueRunning(ctx, worker, pollIntervalMs);
-      return;
-    }
-
-    // ── Just in case the "real" query shows work. ——
-    // This is to capture races in going to idle just after a racing ping.
-    if (await confirmHasWork(ctx, queryRef, queryArgs)) {
-      console.warn(`[loop] ${worker.name} snapshot query mismatch`);
-      await continueRunning(ctx, worker, 0);
-      return;
-    }
-
-    // ── The query told us when to try again. ──
-    const idleTimeoutMs =
-      result?.kind === "idle" ? result.timeoutMs : undefined;
-    if (idleTimeoutMs != null) {
-      if (
-        idleTimeoutMs <= RUNNING_THRESHOLD_MS ||
-        idleTimeoutMs <= pollIntervalMs
-      ) {
-        // May as well stay running.
-        await continueRunning(ctx, worker, idleTimeoutMs);
-      } else {
-        // debounce 0: a ping can interrupt the sleep at any time.
-        await scheduleWaiting(ctx, worker, idleTimeoutMs);
+      if (snap && "batch" in snap) {
+        const ret = await runBatch(ctx, worker.workerMutation, snap.batch);
+        const debounceMs = ret?.debounceMs ?? 0;
+        await scheduleLoop(ctx, worker, debounceMs);
+        return;
       }
-      return;
-    }
 
-    // ── No work and no time to retry, so go fully idle. ──
-    await goIdle(ctx, worker, state);
-    console.debug(`[loop] "${name}" → idle`);
+      // Snapshot says idle. Re-read with a real dependency to (a) catch an
+      // insert that raced the snapshot and (b) subscribe to the work query's
+      // read set so a future insert reactively wakes us.
+      const real = (await ctx.runQuery(
+        queryRef,
+        queryArgs,
+      )) as BatchResult<Value>;
+      if (real && "batch" in real) {
+        console.warn(`[loop] "${name}" snapshot query mismatch`);
+        await scheduleLoop(ctx, worker, 0);
+        return;
+      }
+
+      // No work: suspend until an insert invalidates our read set, or (if the
+      // query gave one) until the timeout deadline. `requestRetry` aborts
+      // uncatchably, so the surrounding try/catch does not catch it.
+      const timeoutMs = real?.kind === "idle" ? real.timeoutMs : undefined;
+      console.debug(`[loop] "${name}" → suspended`);
+      requestRetry({ timeoutMs });
+    } catch (e) {
+      // A genuine failure in the work query or worker mutation. Suspend and
+      // retry after a backoff instead of dying (replaces the old monitor).
+      const backoffMs =
+        worker.config.retryBackoffMs ?? DEFAULT_CONFIG.retryBackoffMs;
+      console.error(`[loop] "${name}" failed — retrying in ${backoffMs}ms`, e);
+      console.event("retry", { name });
+      requestRetry({ timeoutMs: backoffMs });
+    }
   },
 });
 
-/** A real (dependency-taking) read of the work query. */
-async function confirmHasWork(
-  ctx: MutationCtx,
-  queryRef: FunctionHandle<"query", BatchQueryArgs, BatchResult<Value>>,
-  queryArgs: BatchQueryArgs,
-): Promise<boolean> {
-  const confirm = await ctx.runQuery(queryRef, queryArgs);
-  // Match the snapshot path's detection: a result with a `batch` is work.
-  return !!confirm && "batch" in confirm;
+/** Run the worker mutation for a batch, committing in this transaction. */
+async function runBatch(
+  ctx: { runMutation: (ref: any, args: any) => Promise<any> },
+  workerMutation: string,
+  batch: Value,
+): Promise<WorkerResult> {
+  const mutationRef = workerMutation as unknown as FunctionHandle<
+    "mutation",
+    any,
+    WorkerResult
+  >;
+  return ctx.runMutation(mutationRef, batch);
 }
