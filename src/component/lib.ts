@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server.js";
+import { mutation, query } from "./functions.js";
 import {
   getWorker,
   ping as pingHelper,

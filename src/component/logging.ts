@@ -42,6 +42,42 @@ const REPORT = logLevelByName["REPORT"];
 const WARN = logLevelByName["WARN"];
 const ERROR = logLevelByName["ERROR"];
 
+/**
+ * A silent {@link Logger} that records every call instead of writing to the
+ * console. Use it in tests to keep output clean and to assert logging as a
+ * side-effect, e.g. `expect(log.events).toContainEqual({ event: "restart", … })`.
+ */
+export type MockLogger = Logger & {
+  readonly logs: {
+    level: "debug" | "info" | "warn" | "error";
+    args: unknown[];
+  }[];
+  readonly events: { event: string; payload: Record<string, unknown> }[];
+};
+
+export function createMockLogger(): MockLogger {
+  const logs: MockLogger["logs"] = [];
+  const events: MockLogger["events"] = [];
+  const at =
+    (level: MockLogger["logs"][number]["level"]) =>
+    (...args: unknown[]) => {
+      logs.push({ level, args });
+    };
+  return {
+    logs,
+    events,
+    debug: at("debug"),
+    info: at("info"),
+    warn: at("warn"),
+    error: at("error"),
+    time: () => {},
+    timeEnd: () => {},
+    event: (event, payload) => {
+      events.push({ event, payload });
+    },
+  };
+}
+
 export function createLogger(level?: LogLevel): Logger {
   const levelIndex = logLevelByName[level ?? DEFAULT_LOG_LEVEL];
   if (levelIndex === undefined) {

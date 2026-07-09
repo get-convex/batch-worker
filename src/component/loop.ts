@@ -1,12 +1,7 @@
 import { v, type Value } from "convex/values";
 import type { FunctionHandle } from "convex/server";
-import {
-  env,
-  internalMutation,
-  type MutationCtx,
-} from "./_generated/server.js";
+import { internalMutation, type MutationCtx } from "./functions.js";
 import { runSnapshotQuery } from "./future.js";
-import { createLogger } from "./logging.js";
 import {
   continueRunning,
   getWorker,
@@ -42,14 +37,13 @@ export const loop = internalMutation({
   handler: async (ctx, { name, generation }) => {
     const worker = await getWorker(ctx, name);
     const state = worker && (await getOrCreateWorkerState(ctx, worker));
-    const console = createLogger(env.LOG_LEVEL);
     if (!worker || !state) {
-      console.debug(`[loop] "${name}" worker not found or state missing`);
+      ctx.log.debug(`[loop] "${name}" worker not found or state missing`);
       return; // worker was deleted
     }
 
     if (state.generation !== generation) {
-      console.debug(
+      ctx.log.debug(
         `[loop] "${name}" superseded (gen ${generation} !== ${state.generation})`,
       );
       return;
@@ -94,7 +88,7 @@ export const loop = internalMutation({
     // ── Just in case the "real" query shows work. ——
     // This is to capture races in going to idle just after a racing ping.
     if (await confirmHasWork(ctx, queryRef, queryArgs)) {
-      console.warn(`[loop] ${worker.name} snapshot query mismatch`);
+      ctx.log.warn(`[loop] ${worker.name} snapshot query mismatch`);
       await continueRunning(ctx, worker, 0);
       return;
     }
@@ -118,7 +112,7 @@ export const loop = internalMutation({
 
     // ── No work and no time to retry, so go fully idle. ──
     await goIdle(ctx, worker, state);
-    console.debug(`[loop] "${name}" → idle`);
+    ctx.log.debug(`[loop] "${name}" → idle`);
   },
 });
 

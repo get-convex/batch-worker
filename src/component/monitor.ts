@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { env, internalMutation } from "./_generated/server.js";
+import { internalMutation } from "./functions.js";
 import {
   cancelMonitor,
   continueRunning,
@@ -7,7 +7,6 @@ import {
   getOrCreateWorkerState,
   getWorker,
 } from "./kick.js";
-import { createLogger } from "./logging.js";
 
 /**
  * Liveness watchdog. Scheduled ~`monitorLagMs` after the loop's next run by
@@ -21,16 +20,15 @@ export const monitor = internalMutation({
   args: { name: v.string() },
   handler: async (ctx, { name }) => {
     const worker = await getWorker(ctx, name);
-    const console = createLogger(env.LOG_LEVEL);
     if (!worker) {
-      console.debug(`[monitor] "${name}" not found, bailing`);
+      ctx.log.debug(`[monitor] "${name}" not found, bailing`);
       return;
     }
 
     const state = await getOrCreateWorkerState(ctx, worker);
     if (worker.status.kind !== "running") {
       await cancelMonitor(ctx, state);
-      console.debug(`[monitor] "${name}" ${worker.status.kind}, no-op`);
+      ctx.log.debug(`[monitor] "${name}" ${worker.status.kind}, no-op`);
       return;
     }
 
@@ -38,8 +36,8 @@ export const monitor = internalMutation({
       state?.runnerId &&
       (await ctx.db.system.get("_scheduled_functions", state?.runnerId));
     if (loop?.state.kind !== "pending") {
-      console.error(`[monitor] "${name}" loop is not running — restarting`);
-      console.event("restart", { name });
+      ctx.log.error(`[monitor] "${name}" loop is not running — restarting`);
+      ctx.log.event("restart", { name });
       await continueRunning(ctx, worker, 0);
       return;
     }
