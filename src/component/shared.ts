@@ -1,4 +1,8 @@
-import { v, type Infer, type Validator } from "convex/values";
+import {
+  v,
+  type Infer,
+  type Validator,
+} from "convex/values";
 
 export const MS = 1;
 export const SECOND = 1000 * MS;
@@ -97,7 +101,7 @@ export type BatchQueryArgs = Infer<typeof vBatchQueryArgs>;
  */
 export function vBatchResult<B extends Validator<any, "required", any>>(
   batch: B,
-): Validator<BatchResult<Infer<B>>, "required", any> {
+) {
   return v.union(
     v.object({ kind: v.optional(v.literal("work")), batch }),
     v.object({
@@ -118,7 +122,7 @@ export function vBatchResult<B extends Validator<any, "required", any>>(
        */
       timeoutMs: v.optional(v.number()),
     }),
-  ) as Validator<BatchResult<Infer<B>>, "required", any>;
+  );
 }
 
 /**
@@ -152,7 +156,7 @@ export type BatchResult<Batch> =
  */
 export type WorkerResult = null | { debounceMs?: number | undefined };
 
-export const vWorkerResult: Validator<WorkerResult, "required", any> = v.union(
+export const vWorkerResult = v.union(
   v.null(),
   v.object({
     /**
@@ -161,4 +165,4 @@ export const vWorkerResult: Validator<WorkerResult, "required", any> = v.union(
      */
     debounceMs: v.optional(v.number()),
   }),
-) as Validator<WorkerResult, "required", any>;
+);
