@@ -9,7 +9,6 @@
  */
 
 import type * as functions from "../functions.js";
-import type * as future from "../future.js";
 import type * as kick from "../kick.js";
 import type * as lib from "../lib.js";
 import type * as logging from "../logging.js";
@@ -26,7 +25,6 @@ import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
   functions: typeof functions;
-  future: typeof future;
   kick: typeof kick;
   lib: typeof lib;
   logging: typeof logging;
