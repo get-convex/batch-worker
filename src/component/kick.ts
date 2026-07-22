@@ -210,7 +210,7 @@ export async function goIdle(
 async function scheduleLoopRun(
   ctx: MutationCtx,
   worker: Doc<"workers">,
-  opts: { delayMs: number; lastWorkTs?: number },
+  opts: { delayMs: number; lastWorkTs?: number | undefined },
 ): Promise<void> {
   const state = await getOrCreateWorkerState(ctx, worker);
   const generation = state.generation + 1n;
