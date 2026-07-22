@@ -34,11 +34,11 @@ export const addEvent = mutation({
  * The work query: returns the next batch of work, or `idle` when the queue is
  * empty. Its `batch` shape lines up with `processBatch`'s args.
  */
+const vEvent = v.object({ id: v.id("events"), value: v.number() });
+
 export const getBatch = internalQuery({
   args: vBatchQueryArgs,
-  returns: vBatchResult(
-    v.object({ ids: v.array(v.id("events")), values: v.array(v.number()) }),
-  ),
+  returns: vBatchResult(v.object({ events: v.array(vEvent) })),
   handler: async (ctx) => {
     const events = await ctx.db.query("events").take(BATCH_SIZE);
     if (events.length === 0) {
@@ -47,8 +47,7 @@ export const getBatch = internalQuery({
     return {
       kind: "work" as const,
       batch: {
-        ids: events.map((e) => e._id),
-        values: events.map((e) => e.value),
+        events: events.map((e) => ({ id: e._id, value: e.value })),
       },
     };
   },
@@ -59,9 +58,9 @@ export const getBatch = internalQuery({
  * processed). Returning nothing re-runs immediately to drain the rest.
  */
 export const processBatch = internalMutation({
-  args: { ids: v.array(v.id("events")), values: v.array(v.number()) },
-  handler: async (ctx, { ids, values }) => {
-    const sum = values.reduce((a, b) => a + b, 0);
+  args: { events: v.array(vEvent) },
+  handler: async (ctx, { events }) => {
+    const sum = events.reduce((a, e) => a + e.value, 0);
     const totals = await ctx.db
       .query("totals")
       .withIndex("key", (q) => q.eq("key", "all"))
@@ -69,16 +68,16 @@ export const processBatch = internalMutation({
     if (totals) {
       await ctx.db.patch("totals", totals._id, {
         total: totals.total + sum,
-        count: totals.count + ids.length,
+        count: totals.count + events.length,
       });
     } else {
       await ctx.db.insert("totals", {
         key: "all",
         total: sum,
-        count: ids.length,
+        count: events.length,
       });
     }
-    for (const id of ids) {
+    for (const { id } of events) {
       await ctx.db.delete("events", id);
     }
   },
