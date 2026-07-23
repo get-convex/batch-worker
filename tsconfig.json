@@ -3,6 +3,7 @@
     "allowJs": true,
     "checkJs": true,
     "strict": true,
+    "exactOptionalPropertyTypes": true,
 
     "target": "ESNext",
     "lib": ["ES2023", "dom", "DOM.Iterable"],
