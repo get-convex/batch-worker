@@ -4,8 +4,8 @@
 
 <!-- START: Include on https://convex.dev/components -->
 
-Run a single background "main loop" over work you insert into your own table —
-with scheduling, debouncing, and recovery built in.
+Process batches of work in your own tables by defining workers that loop
+automatically, with scheduling, debouncing, and recovery built in.
 
 You bring two functions:
 
@@ -315,9 +315,9 @@ await ctx.runMutation(components.batchWorker.lib.start, { name: "events" });
 ### `ping` vs `start`
 
 - **`ping`** creates the worker on first call and resumes it when it's idle. It
-  also wakes a loop that's sleeping on an idle `timeoutMs`. A ping is a
-  no-op when it's already running, the next run is imminent (within ~1s), during
-  a `debounceMs` window (the work gets picked up when the debounce elapses), or
+  also wakes a loop that's sleeping on an idle `timeoutMs`. A ping is a no-op
+  when it's already running, the next run is imminent (within ~1s), during a
+  `debounceMs` window (the work gets picked up when the debounce elapses), or
   when the worker is stopped.
 - **`start`** resumes a `stopped` worker. Ping will not resume when `stopped`.
 
@@ -386,6 +386,6 @@ doc (which holds the handles, config, and run-status: `idle` / `running` /
 which you call on every insert — read `workers` and return without conflicting
 (OCC) with the fast-looping loop. A monotonic `generation` (in `workerState`)
 guarantees only one loop chain runs at a time: a superseded loop sees a
-mismatched generation and exits. The liveness monitor is scheduled ~`monitorLagMs` _after_
-the loop's next run and pushed back as the loop keeps running, so it only fires
-(and restarts the loop) if the loop actually died.
+mismatched generation and exits. The liveness monitor is scheduled
+~`monitorLagMs` _after_ the loop's next run and pushed back as the loop keeps
+running, so it only fires (and restarts the loop) if the loop actually died.
