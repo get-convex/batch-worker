@@ -1,8 +1,6 @@
 import { v, type Value } from "convex/values";
 import type { FunctionHandle } from "convex/server";
-import { env } from "./_generated/server.js";
 import { internalMutation, type MutationCtx } from "./functions.js";
-import { createLogger } from "./logging.js";
 import {
   continueRunning,
   getWorker,

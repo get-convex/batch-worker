@@ -8,8 +8,10 @@
  * @module
  */
 
+import type * as aggregates from "../aggregates.js";
 import type * as e2e from "../e2e.js";
 import type * as example from "../example.js";
+import type * as rateLimited from "../rateLimited.js";
 
 import type {
   ApiFromModules,
@@ -18,8 +20,10 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  aggregates: typeof aggregates;
   e2e: typeof e2e;
   example: typeof example;
+  rateLimited: typeof rateLimited;
 }>;
 
 /**
@@ -50,4 +54,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   batchWorker: import("@convex-dev/batch-worker/_generated/component.js").ComponentApi<"batchWorker">;
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
 };
