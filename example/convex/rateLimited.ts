@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
+import { SECOND, RateLimiter } from "@convex-dev/rate-limiter";
 import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
@@ -21,16 +21,23 @@ import {
 
 const WORKER = "llm";
 
-const BATCH_SIZE = 10;
+// Small so a burst forms several batches that drain one after another, instead
+// of a single batch swallowing everything.
+const BATCH_SIZE = 5;
 
+// A real budget (e.g. 200k tokens/min) is impossible to hit by clicking, so
+// this demo uses a deliberately tiny one — ~60 tokens/sec with a 300-token
+// burst. Each request costs ~150 tokens (see `submitRequest` below), so even a
+// couple of them blow past the budget and you can watch batches queue up and
+// drain over several seconds.
 const rateLimiter = new RateLimiter(components.rateLimiter, {
   // One budget for all tokens, input and output. Model it on your provider's
   // tokens-per-minute limit.
   llmTokens: {
     kind: "token bucket",
-    rate: 200_000,
-    period: MINUTE,
-    capacity: 200_000,
+    rate: 300,
+    period: 5 * SECOND,
+    capacity: 300,
   },
 });
 
@@ -207,11 +214,38 @@ export const finishBatch = internalMutation({
 export const listRequests = query({
   args: {},
   handler: async (ctx) => {
-    const requests = await ctx.db.query("llmRequests").take(100);
+    // Newest first, so freshly submitted prompts show up at the top.
+    const requests = await ctx.db.query("llmRequests").order("desc").take(50);
     return requests.map((r) => ({
       prompt: r.prompt,
       state: r.state,
       response: r.response ?? null,
     }));
   },
+});
+
+// Live counts per state, so the UI can show the queue backing up and draining.
+export const stats = query({
+  args: {},
+  handler: async (ctx) => {
+    const count = async (state: "pending" | "started" | "finished") =>
+      (
+        await ctx.db
+          .query("llmRequests")
+          .withIndex("state", (q) => q.eq("state", state))
+          .take(500)
+      ).length;
+    return {
+      pending: await count("pending"),
+      started: await count("started"),
+      finished: await count("finished"),
+    };
+  },
+});
+
+// status takes only a `{ name }`, so call it on the component.
+export const workerStatus = query({
+  args: {},
+  handler: async (ctx) =>
+    ctx.runQuery(components.batchWorker.lib.status, { name: WORKER }),
 });
