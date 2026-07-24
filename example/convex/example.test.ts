@@ -18,7 +18,7 @@ describe("example worker", () => {
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const totals = await t.query(api.example.getTotals, {});
-    expect(totals).toEqual({ total: 5, count: 1 });
+    expect(totals).toEqual({ total: 5, count: 1, pending: 0 });
   });
 
   test("batches many events across iterations", async () => {
@@ -33,7 +33,7 @@ describe("example worker", () => {
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const totals = await t.query(api.example.getTotals, {});
-    expect(totals).toEqual({ total: expected, count: 25 });
+    expect(totals).toEqual({ total: expected, count: 25, pending: 0 });
   });
 
   test("worker goes idle after draining the queue", async () => {
@@ -60,6 +60,7 @@ describe("example worker", () => {
     expect(await t.query(api.example.getTotals, {})).toEqual({
       total: 17,
       count: 2,
+      pending: 0,
     });
   });
 });
