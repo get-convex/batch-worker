@@ -23,17 +23,23 @@ describe("serial aggregate updates", () => {
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const totals = await t.query(api.aggregates.getTotals, {});
-    expect(totals).toEqual(expected);
+    expect(totals).toEqual({ totals: expected, pending: 0 });
   });
 
   test("keeps aggregating after going idle", async () => {
     const t = initConvexTest();
     await t.mutation(api.aggregates.recordScore, { team: "red", points: 3 });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await t.query(api.aggregates.getTotals, {})).toEqual({ red: 3 });
+    expect(await t.query(api.aggregates.getTotals, {})).toEqual({
+      totals: { red: 3 },
+      pending: 0,
+    });
 
     await t.mutation(api.aggregates.recordScore, { team: "red", points: 4 });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await t.query(api.aggregates.getTotals, {})).toEqual({ red: 7 });
+    expect(await t.query(api.aggregates.getTotals, {})).toEqual({
+      totals: { red: 7 },
+      pending: 0,
+    });
   });
 });
