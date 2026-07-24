@@ -1,7 +1,42 @@
 # Example app
 
-Components need an app that uses them in order to run codegen.
+A live demo of `@convex-dev/batch-worker`. The backend
+([`convex/`](./convex)) defines three named workers and the Vite UI
+([`src/`](./src)) drives each one:
 
-An example app is also useful for testing and documentation.
+- **Work queue** ([example.ts](./convex/example.ts)) — batch and sum events.
+- **Live scoreboard** ([aggregates.ts](./convex/aggregates.ts)) — a single
+  writer folds scores into per-team totals with no write contention.
+- **Rate-limited LLM batches** ([rateLimited.ts](./convex/rateLimited.ts)) —
+  collect requests and spend a token budget on async calls.
 
-Run the example and convex commands from the root of the repo.
+Run all commands from the **root of the repo**.
+
+## Develop
+
+```sh
+npm run dev          # backend + component watcher
+npm run dev:frontend # Vite dev server (second terminal)
+```
+
+## Deploy
+
+The demo is hosted on Convex with
+[`@convex-dev/static-hosting`](https://github.com/get-convex/static-hosting):
+the component owns `/` and serves the built assets alongside the backend. These
+are one-off commands, so they aren't wired into `package.json`.
+
+Smoke-test against the **dev** deployment your local `npm run dev` already
+pushes to — build with the repo's Node, then upload the prebuilt `dist/`:
+
+```sh
+(cd example && vite build)
+npx static-hosting upload --dist example/dist
+```
+
+Ship to **production** — this builds with the prod `VITE_CONVEX_URL`, deploys
+the backend, and publishes to `https://<deployment>.convex.site`:
+
+```sh
+npx static-hosting deploy --dist example/dist --build-command '(cd example && vite build)'
+```

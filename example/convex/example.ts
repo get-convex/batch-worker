@@ -90,9 +90,12 @@ export const getTotals = query({
       .query("totals")
       .withIndex("key", (q) => q.eq("key", "all"))
       .unique();
+    // Events left in the queue waiting for the worker to pick them up.
+    const pending = (await ctx.db.query("events").take(1000)).length;
     return {
       total: totals?.total ?? 0,
       count: totals?.count ?? 0,
+      pending,
     };
   },
 });

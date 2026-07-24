@@ -1,6 +1,7 @@
 # Batch Worker
 
 [![npm version](https://badge.fury.io/js/@convex-dev%2Fbatch-worker.svg)](https://badge.fury.io/js/@convex-dev/batch-worker)
+[![Convex Component](https://www.convex.dev/components/badge/batch-worker)](https://www.convex.dev/components/batch-worker)
 
 <!-- START: Include on https://convex.dev/components -->
 
@@ -370,7 +371,14 @@ npm i
 npm run dev
 ```
 
-Run `npm run dev:frontend` to interact with it through a Vite app.
+Run `npm run dev:frontend` (in a second terminal) to interact with it through
+the Vite demo UI in [`example/src`](./example/src). It exercises all three
+workers — the basic queue, the live scoreboard, and the async LLM batches.
+
+The demo is hosted on Convex itself via
+[`@convex-dev/static-hosting`](https://github.com/get-convex/static-hosting),
+published to `https://<deployment>.convex.site`. See
+[example/README.md](./example/README.md#deploy) for the deploy commands.
 
 ### How it works
 

@@ -95,6 +95,18 @@ export const getTotals = query({
   args: {},
   handler: async (ctx) => {
     const totals = await ctx.db.query("teamTotals").take(100);
-    return Object.fromEntries(totals.map((t) => [t.team, t.total]));
+    // Scores still queued, waiting to be folded into the aggregates.
+    const pending = (await ctx.db.query("scoreEvents").take(1000)).length;
+    return {
+      totals: Object.fromEntries(totals.map((t) => [t.team, t.total])),
+      pending,
+    };
   },
+});
+
+// status takes only a `{ name }`, so call it on the component.
+export const workerStatus = query({
+  args: {},
+  handler: async (ctx) =>
+    ctx.runQuery(components.batchWorker.lib.status, { name: WORKER }),
 });
