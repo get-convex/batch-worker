@@ -112,7 +112,84 @@ export const processBatch = internalMutation({
 
 The component **does not clean up your work for you** — your worker mutation is
 responsible for deleting (or marking complete / advancing past) the rows it
-processed, otherwise the next query will return them again.
+processed, otherwise the next query will return them again. The snippet above
+keeps that as simple as possible; for a queue that stays busy, use a cursor as
+described next (that's what the examples in this repo do).
+
+### Resume from a cursor instead of rescanning the front
+
+`.take(BATCH_SIZE)` from the front of the table + delete what you processed is
+the simplest thing that works, and it's fine for a queue that's usually empty.
+But each delete leaves a **tombstone** in the index until it's vacuumed, and a
+scan that always starts at the front has to walk over them — so on a busy queue
+a fixed-size batch turns into a read that keeps growing. (Patching rows out of
+the range you scan — `state: "pending"` → `"started"` — leaves tombstones there
+too.)
+
+The fix is a cursor: remember where the last batch stopped and start the next
+scan there. `_creationTime` can't be that cursor — it's assigned when a mutation
+_starts_, so a row inserted by a slow mutation can land _behind_ rows that
+committed while it was running, and a cursor would skip it. `v.commitTs()`
+(Convex ≥ 1.43) can: the field resolves at commit time to an int64 ordered by
+**commit** order, so nothing ever appears behind the cursor.
+
+```ts
+// convex/schema.ts
+events: defineTable({
+  value: v.number(),
+  // Write `ctx.db.vars.commitTs` here on every insert (and patch) and it
+  // resolves, when that mutation commits, to an int64 in commit order.
+  updatedAt: v.commitTs(),
+}).index("updatedAt", ["updatedAt"]),
+
+// Where the worker got to. One row per worker name; only the loop writes it.
+// A plain int64 — a timestamp copied off a row, not a `v.commitTs()` of its own.
+cursors: defineTable({ name: v.string(), commitTs: v.int64() }).index("name", [
+  "name",
+]),
+```
+
+```ts
+// On insert, ask for the commit timestamp:
+await ctx.db.insert("events", { value, updatedAt: ctx.db.vars.commitTs });
+
+// In the work query, resume from the cursor and report how far you got:
+const from = await cursorFor(ctx, name); // 0n if there's no cursor yet
+const events = await ctx.db
+  .query("events")
+  .withIndex("updatedAt", (q) => q.gte("updatedAt", from))
+  .take(BATCH_SIZE);
+// ...
+batch: { events: /* ... */, cursor: cursorThrough(events) },
+
+// In the worker mutation, after processing (and deleting) the batch:
+if (cursor !== null) {
+  await advanceCursor(ctx, WORKER, cursor);
+}
+```
+
+Two things to get right:
+
+- **The cursor is inclusive** (`gte`, not `gt`). Every row a single mutation
+  inserts shares one commit timestamp, so a batch can end in the middle of a tie
+  — `gt` would skip the rest of that mutation's rows and strand them forever.
+  Resuming _at_ the cursor re-reads at most one mutation's worth of rows you
+  already processed (tombstones, if you deleted them).
+- **Don't advance past a timestamp you can't read yet.** The field's type is
+  `bigint | CommitTsPlaceholder`: a row written by the mutation that's reading
+  it back still holds the placeholder, because its timestamp isn't assigned
+  until that mutation commits. Take the cursor from the last row that _has_
+  resolved (that's what `cursorThrough` does) and leave the cursor alone if none
+  have — the pending writes commit later, so they sort after wherever the cursor
+  is and the next scan picks them up. Substituting a guess (`0n`, `Date.now()`)
+  either skips them or walks the cursor backwards.
+
+Keep deleting processed rows (storage isn't free), or don't — with a cursor,
+deletion is a storage decision rather than a correctness one, so you can also
+keep the rows as a log and clean them up on a slower schedule.
+
+See [cursor.ts](./example/convex/cursor.ts) for the `cursorFor` /
+`advanceCursor` / `cursorThrough` helpers the examples share.
 
 ### Fetch work in the query, process it in the mutation
 
@@ -293,8 +370,10 @@ If your work query or worker mutation throws, the loop dies and the liveness
 monitor restarts it after ~`monitorLagMs` — and since the unprocessed rows are
 still in your table, the query will hand out the **same batch again**. That
 gives you at-least-once processing, but it also means one poison item that
-always throws can wedge the queue. For work that can fail per item, catch errors
-inside the worker mutation, and isolate bad docs in a table for async debugging.
+always throws can wedge the queue. (A cursor doesn't change that: it's advanced
+by the same mutation that processes the batch, so a throw rolls it back too.)
+For work that can fail per item, catch errors inside the worker mutation, and
+isolate bad docs in a table for async debugging.
 
 This is a low-level primitive, relative to components like Workpool or Workflow,
 so you have to handle exceptional cases yourself.
@@ -355,10 +434,18 @@ await t.finishAllScheduledFunctions(vi.runAllTimers);
 See [example.test.ts](./example/convex/example.test.ts) and
 [setup.test.ts](./example/convex/setup.test.ts).
 
+One caveat if you use the cursor pattern above: `convex-test` doesn't resolve
+`v.commitTs()` yet — the field always reads back as the unresolved placeholder,
+so `cursorThrough` finds nothing to advance to and every scan starts from the
+front. Tests still pass (the worker deletes what it processed, so the queue
+drains), but they don't exercise the cursor itself; check that against a real
+deployment.
+
 See the full working examples in the example app:
 [example.ts](./example/convex/example.ts) (basic queue),
-[aggregates.ts](./example/convex/aggregates.ts) (denormalized aggregates), and
-[rateLimited.ts](./example/convex/rateLimited.ts) (async LLM batches).
+[aggregates.ts](./example/convex/aggregates.ts) (denormalized aggregates),
+[rateLimited.ts](./example/convex/rateLimited.ts) (async LLM batches), and
+[cursor.ts](./example/convex/cursor.ts) (the shared `commitTs` cursor helpers).
 
 <!-- END: Include on https://convex.dev/components -->
 
