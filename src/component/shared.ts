@@ -1,4 +1,10 @@
-import { v, type Infer, type Validator } from "convex/values";
+import {
+  asObjectValidator,
+  v,
+  type Infer,
+  type PropertyValidators,
+  type Validator,
+} from "convex/values";
 
 export const MS = 1;
 export const SECOND = 1000 * MS;
@@ -79,11 +85,14 @@ export type BatchQueryArgs = Infer<typeof vBatchQueryArgs>;
  *   handler: ...
  * });
  */
-export function vBatchResult<B extends Validator<any, "required", any>>(
-  batch: B,
-) {
+export function vBatchResult<
+  B extends Validator<any, "required", any> | PropertyValidators,
+>(batch: B) {
   return v.union(
-    v.object({ kind: v.optional(v.literal("work")), batch }),
+    v.object({
+      kind: v.optional(v.literal("work")),
+      batch: asObjectValidator(batch),
+    }),
     v.object({
       kind: v.literal("idle"),
       /**

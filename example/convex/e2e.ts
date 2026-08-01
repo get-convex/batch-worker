@@ -7,6 +7,7 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
+import { advanceCursor, cursorFor, resetCursor } from "./cursor.js";
 
 // Instrumented worker used by e2e.mjs to measure performance. Kept separate
 // from the README example (different worker `name`) so it doesn't interfere.
@@ -26,6 +27,8 @@ export const reset = mutation({
       const docs = await ctx.db.query(table).collect();
       for (const d of docs) await ctx.db.delete(table, d._id);
     }
+    // Reset this worker's cursor too, so the next scenario starts from scratch.
+    await resetCursor(ctx, WORKER);
   },
 });
 
@@ -34,7 +37,10 @@ export const enqueue = mutation({
   args: { count: v.number() },
   handler: async (ctx, { count }) => {
     for (let i = 0; i < count; i++) {
-      await ctx.db.insert("e2eEvents", { value: 1 });
+      await ctx.db.insert("e2eEvents", {
+        value: 1,
+        updatedAt: ctx.db.vars.commitTs,
+      });
     }
     await ping(ctx, components.batchWorker, {
       name: WORKER,
@@ -51,10 +57,17 @@ export const getBatch = internalQuery({
       items: v.array(
         v.object({ id: v.id("e2eEvents"), creationTime: v.number() }),
       ),
+      cursor: v.int64(),
     }),
   ),
-  handler: async (ctx) => {
-    const events = await ctx.db.query("e2eEvents").take(BATCH_SIZE);
+  handler: async (ctx, { name }) => {
+    // Resume from the cursor so batch reads stay a fixed size no matter how
+    // many rows (and tombstones) the harness has already churned through.
+    const from = await cursorFor(ctx, name);
+    const events = await ctx.db
+      .query("e2eEvents")
+      .withIndex("updatedAt", (q) => q.gte("updatedAt", from))
+      .take(BATCH_SIZE);
     if (events.length === 0) {
       return { kind: "idle" as const };
     }
@@ -65,6 +78,7 @@ export const getBatch = internalQuery({
           id: e._id,
           creationTime: e._creationTime,
         })),
+        cursor: events.at(-1)!.updatedAt as bigint,
       },
     };
   },
@@ -75,8 +89,9 @@ export const processBatch = internalMutation({
     items: v.array(
       v.object({ id: v.id("e2eEvents"), creationTime: v.number() }),
     ),
+    cursor: v.int64(),
   },
-  handler: async (ctx, { items }) => {
+  handler: async (ctx, { items, cursor }) => {
     const now = Date.now();
     const latencies = items.map((b) => now - b.creationTime);
     await ctx.db.insert("e2eSamples", {
@@ -88,6 +103,7 @@ export const processBatch = internalMutation({
     for (const b of items) {
       await ctx.db.delete("e2eEvents", b.id);
     }
+    await advanceCursor(ctx, WORKER, cursor);
   },
 });
 
@@ -98,7 +114,15 @@ export const samples = query({
 
 export const pending = query({
   args: {},
-  handler: async (ctx) => (await ctx.db.query("e2eEvents").take(100000)).length,
+  handler: async (ctx) => {
+    const from = await cursorFor(ctx, WORKER);
+    return (
+      await ctx.db
+        .query("e2eEvents")
+        .withIndex("updatedAt", (q) => q.gte("updatedAt", from))
+        .take(100000)
+    ).length;
+  },
 });
 
 export const status = query({

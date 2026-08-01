@@ -7,6 +7,7 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
+import { advanceCursor, cursorFor } from "./cursor.js";
 
 // Serial processing to update denormalized aggregates without write conflicts.
 //
@@ -32,41 +33,71 @@ const worker = {
 export const recordScore = mutation({
   args: { team: v.string(), points: v.number() },
   handler: async (ctx, { team, points }) => {
-    await ctx.db.insert("scoreEvents", { team, points });
+    // `db.vars.commitTs` resolves to this mutation's commit timestamp. Every row
+    // a mutation writes shares one value — getBatch below reads a whole tie at
+    // once — and nothing can commit later with a smaller one. See cursor.ts.
+    await ctx.db.insert("scoreEvents", {
+      team,
+      points,
+      insertedAt: ctx.db.vars.commitTs,
+    });
     await ping(ctx, components.batchWorker, worker);
   },
 });
 
-const vScoreEvent = v.object({
-  id: v.id("scoreEvents"),
-  team: v.string(),
-  points: v.number(),
-});
+const vBatch = {
+  events: v.array(
+    v.object({
+      team: v.string(),
+      points: v.number(),
+    }),
+  ),
+  cursor: v.int64(),
+};
 
 export const getBatch = internalQuery({
   args: vBatchQueryArgs,
-  returns: vBatchResult(v.object({ events: v.array(vScoreEvent) })),
-  handler: async (ctx) => {
-    const events = await ctx.db.query("scoreEvents").take(BATCH_SIZE);
+  returns: vBatchResult(vBatch),
+  handler: async (ctx, { name }) => {
+    // Resume from after the last batch's commit timestamp.
+    // We don't delete events, so the cursor allows us to avoid
+    // handling scores multiple times.
+    const from = await cursorFor(ctx, name);
+    const events = await ctx.db
+      .query("scoreEvents")
+      .withIndex("insertedAt", (q) => q.gt("insertedAt", from))
+      .take(BATCH_SIZE);
     if (events.length === 0) {
       return { kind: "idle" as const };
     }
+    // The cursor is exclusive (`gt`), so a batch must not stop in the middle of
+    // a commit timestamp — everything one transaction inserted shares one, and
+    // whatever we left behind would be skipped. Read the rest of that tie in
+    // (skipping the rows we already have) so the batch ends on a boundary.
+    const lastCommitTs = events.at(-1)!.insertedAt as bigint;
+    const taken = new Set(events.map((e) => e._id));
+    const remainingEvents = await ctx.db
+      .query("scoreEvents")
+      .withIndex("insertedAt", (q) => q.eq("insertedAt", lastCommitTs))
+      .collect();
+    events.push(...remainingEvents.filter((e) => !taken.has(e._id)));
     return {
       kind: "work" as const,
       batch: {
         events: events.map((e) => ({
-          id: e._id,
           team: e.team,
           points: e.points,
         })),
+        // Rows come back in commit order, so the last one is how far we got.
+        cursor: lastCommitTs,
       },
     };
   },
 });
 
 export const processBatch = internalMutation({
-  args: { events: v.array(vScoreEvent) },
-  handler: async (ctx, { events }) => {
+  args: vBatch,
+  handler: async (ctx, { events, cursor }) => {
     // Fold the batch into one delta per team first, so we touch each aggregate
     // row once regardless of how many events it covers.
     const deltas = new Map<string, number>();
@@ -84,19 +115,26 @@ export const processBatch = internalMutation({
         await ctx.db.insert("teamTotals", { team, total: delta });
       }
     }
-    for (const { id } of events) {
-      await ctx.db.delete("scoreEvents", id);
-    }
+    // Only the loop writes the cursor, so this never conflicts with inserts.
+    await advanceCursor(ctx, WORKER, cursor);
     // Returning nothing re-runs immediately to drain the rest.
   },
 });
 
+// For the dashboard UI
 export const getTotals = query({
   args: {},
   handler: async (ctx) => {
     const totals = await ctx.db.query("teamTotals").take(100);
-    // Scores still queued, waiting to be folded into the aggregates.
-    const pending = (await ctx.db.query("scoreEvents").take(1000)).length;
+    // Scores still queued, waiting to be folded into the aggregates. Reading
+    // from the cursor keeps this off the tombstones too.
+    const from = await cursorFor(ctx, WORKER);
+    const pending = (
+      await ctx.db
+        .query("scoreEvents")
+        .withIndex("insertedAt", (q) => q.gt("insertedAt", from))
+        .take(1000)
+    ).length;
     return {
       totals: Object.fromEntries(totals.map((t) => [t.team, t.total])),
       pending,

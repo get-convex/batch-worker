@@ -1,14 +1,17 @@
 # Example app
 
-A live demo of `@convex-dev/batch-worker`. The backend
-([`convex/`](./convex)) defines three named workers and the Vite UI
-([`src/`](./src)) drives each one:
+A live demo of `@convex-dev/batch-worker`. The backend ([`convex/`](./convex))
+defines three named workers and the Vite UI ([`src/`](./src)) drives each one:
 
 - **Work queue** ([example.ts](./convex/example.ts)) — batch and sum events.
 - **Live scoreboard** ([aggregates.ts](./convex/aggregates.ts)) — a single
   writer folds scores into per-team totals with no write contention.
 - **Rate-limited LLM batches** ([rateLimited.ts](./convex/rateLimited.ts)) —
   collect requests and spend a token budget on async calls.
+
+All three drain their queue by resuming from a `v.commitTs()` cursor
+([cursor.ts](./convex/cursor.ts)) rather than rescanning the front of the table
+each batch.
 
 Run all commands from the **root of the repo**.
 

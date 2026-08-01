@@ -9,6 +9,7 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
+import { advanceCursor, cursorFor } from "./cursor.js";
 
 // Batching async LLM requests, paced by a token budget.
 //
@@ -60,6 +61,9 @@ export const submitRequest = mutation({
       prompt,
       inputTokens,
       state: "pending",
+      // Lets the worker cursor through pending requests in commit order rather
+      // than rescanning from the front of the range. See cursor.ts.
+      updatedAt: ctx.db.vars.commitTs,
     });
     await ping(ctx, components.batchWorker, worker);
   },
@@ -73,16 +77,29 @@ const vLlmRequest = v.object({
   inputTokens: v.number(),
 });
 
+const vBatch = v.object({
+  requests: v.array(vLlmRequest),
+  cursor: v.int64(),
+});
+
 export const getBatch = internalQuery({
   args: vBatchQueryArgs,
-  returns: vBatchResult(v.object({ requests: v.array(vLlmRequest) })),
-  handler: async (ctx) => {
+  returns: vBatchResult(vBatch),
+  handler: async (ctx, { name }) => {
     // TODO: also pick up "started" requests whose action never reported back
     // (e.g. `startedAt` older than some timeout) so a crashed batch isn't
-    // stranded. Left out here to keep the example focused.
+    // stranded. That scan walks the (small) "started" range, so it doesn't use
+    // the cursor. Left out here to keep the example focused.
+    //
+    // Nothing is deleted here — requests are patched from "pending" to
+    // "started" — but patching a row out of the pending range leaves a
+    // tombstone there just the same, so the cursor still earns its keep.
+    const from = await cursorFor(ctx, name);
     const pending = await ctx.db
       .query("llmRequests")
-      .withIndex("state", (q) => q.eq("state", "pending"))
+      .withIndex("state_updatedAt", (q) =>
+        q.eq("state", "pending").gte("updatedAt", from),
+      )
       .take(BATCH_SIZE);
     if (pending.length === 0) {
       return { kind: "idle" as const };
@@ -95,6 +112,8 @@ export const getBatch = internalQuery({
           prompt: r.prompt,
           inputTokens: r.inputTokens,
         })),
+        // Rows come back in commit order, so the last one is how far we got.
+        cursor: pending.at(-1)!.updatedAt as bigint,
       },
     };
   },
@@ -105,8 +124,8 @@ export const getBatch = internalQuery({
  * started, and schedule the LLM call for when the budget clears.
  */
 export const startBatch = internalMutation({
-  args: { requests: v.array(vLlmRequest) },
-  handler: async (ctx, { requests }) => {
+  args: vBatch,
+  handler: async (ctx, { requests, cursor }) => {
     const totalInputTokens = requests.reduce((a, r) => a + r.inputTokens, 0);
 
     // Reserve the whole batch's input tokens up front. `reserve: true` never
@@ -117,11 +136,19 @@ export const startBatch = internalMutation({
       reserve: true,
     });
 
-    // Mark them started so getBatch won't hand them out again.
+    // Mark them started so getBatch won't hand them out again. Every request
+    // in the batch gets claimed, so it's safe to move the cursor past them.
+    // Patches refresh `updatedAt` too, so the "started" range stays in claim
+    // order for the recovery scan sketched in getBatch's TODO.
     const startedAt = Date.now();
     for (const { id } of requests) {
-      await ctx.db.patch("llmRequests", id, { state: "started", startedAt });
+      await ctx.db.patch("llmRequests", id, {
+        state: "started",
+        startedAt,
+        updatedAt: ctx.db.vars.commitTs,
+      });
     }
+    await advanceCursor(ctx, WORKER, cursor);
 
     // Make the actual call when the reservation clears. Pass the prompts
     // through so the action doesn't have to re-read them.
@@ -192,6 +219,7 @@ export const finishBatch = internalMutation({
         state: "finished",
         response,
         outputTokens,
+        updatedAt: ctx.db.vars.commitTs,
       });
       // Per-response follow-up could go here, e.g.:
       // - await ctx.runMutation(internal.foo.onLlmComplete, { id, response });
@@ -228,15 +256,25 @@ export const listRequests = query({
 export const stats = query({
   args: {},
   handler: async (ctx) => {
-    const count = async (state: "pending" | "started" | "finished") =>
+    const count = async (state: "started" | "finished") =>
       (
         await ctx.db
           .query("llmRequests")
-          .withIndex("state", (q) => q.eq("state", state))
+          .withIndex("state_updatedAt", (q) => q.eq("state", state))
           .take(500)
       ).length;
+    // The pending count reads from the cursor, like the work query does.
+    const from = await cursorFor(ctx, WORKER);
+    const pending = (
+      await ctx.db
+        .query("llmRequests")
+        .withIndex("state_updatedAt", (q) =>
+          q.eq("state", "pending").gte("updatedAt", from),
+        )
+        .take(500)
+    ).length;
     return {
-      pending: await count("pending"),
+      pending,
       started: await count("started"),
       finished: await count("finished"),
     };

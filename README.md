@@ -27,8 +27,8 @@ After inserting work, call `ping(...)`. The component takes care of the rest:
   error), logging the failure so you can alert on it.
 
 This is the pattern behind components like
-[Workpool](https://github.com/get-convex/workpool) — extracted so you can build
-your own "process a queue" components on top of it.
+[Workpool](https://github.com/get-convex/workpool), extracted so you can build
+your own "process a queue" components.
 
 Found a bug? Feature request?
 [File it here](https://github.com/get-convex/batch-worker/issues).
@@ -49,9 +49,9 @@ app.use(batchWorker, { env: { LOG_LEVEL: "REPORT" } });
 export default app;
 ```
 
-The `env` option is optional — `LOG_LEVEL` defaults to `REPORT`. The default
-mount name is `batchWorker` (i.e. `components.batchWorker`). This works inside
-another component too: call `component.use(batchWorker)` in your component's
+The `env` option is optional, defaults shown above. The default mount name is
+`batchWorker` (i.e. `components.batchWorker`). This works inside another
+component too: call `component.use(batchWorker)` in your component's
 `convex.config.ts`.
 
 ## Usage
@@ -82,27 +82,35 @@ export const addEvent = mutation({
   },
 });
 
+const vEvents = v.array(v.object({ id: v.id("events"), value: v.number() }));
+
 // Return the next batch of work, or `idle` when there's nothing to do.
 export const getBatch = internalQuery({
   args: vBatchQueryArgs, // { name } — lets one query serve multiple queues
-  returns: vBatchResult(v.object({ ids: v.array(v.id("events")) })),
+  returns: vBatchResult({ events: vEvents }),
   handler: async (ctx) => {
+    // See the "Resume from a cursor" section below for an optimized approach
     const events = await ctx.db.query("events").take(BATCH_SIZE);
     if (events.length === 0) {
       return { kind: "idle" as const };
       // Or, if you know when the next item is due:
       // return { kind: "idle" as const, timeoutMs: 30_000 };
     }
-    return { kind: "work" as const, batch: { ids: events.map((e) => e._id) } };
+    return {
+      kind: "work" as const,
+      batch: events.map((e) => ({ id: e._id, value: e.value })),
+    };
   },
 });
 
 // Process one batch. The worker owns cleanup — delete what you process!
 export const processBatch = internalMutation({
-  args: { ids: v.array(v.id("events")) },
-  handler: async (ctx, { ids }) => {
-    // ... do the work (sum, call an API, schedule downstream jobs, etc.) ...
-    for (const id of ids) {
+  args: { events: vEvents },
+  handler: async (ctx, { events }) => {
+    for (const { value, id } of events) {
+      // ... do the work (sum, call an API, schedule downstream jobs, etc.) ...
+
+      // Clean up the work you processed.
       await ctx.db.delete("events", id);
     }
     // Returning nothing re-runs immediately to drain the rest.
@@ -113,6 +121,9 @@ export const processBatch = internalMutation({
 The component **does not clean up your work for you** — your worker mutation is
 responsible for deleting (or marking complete / advancing past) the rows it
 processed, otherwise the next query will return them again.
+
+Note: the snippet above keeps that as simple as possible; for a busy worker, use
+a cursor as described [below](#use-a-cursor-to-track-worker-progress).
 
 ### Fetch work in the query, process it in the mutation
 
@@ -129,10 +140,9 @@ without database conflicts on work being added while being fetched.
   inserts would conflict, so do range reads in the work query only.
 
 So: **fetch the batch in the query, and pass everything the mutation needs
-through `batch`** (this is usually the full document, so the mutation doesn't
-need to re-fetch it). When the mutation updates rows by `_id`, it will depend on
-those documents, so it is protected against concurrent changes to those
-documents.
+through `batch`**, so the mutation doesn't need to re-fetch it. Note: when the
+mutation updates rows by `_id`, it will depend on those documents, so it is
+protected against concurrent changes to those documents.
 
 ```ts
 // ✅ Query scans; mutation gets the data handed to it.
@@ -204,15 +214,103 @@ await ping(ctx, components.batchWorker, {
 });
 ```
 
+### Use a cursor to track worker progress
+
+For best performance, it's advised to use a cursor to track how far you've read,
+and use it to focus future queries, even if you're deleting documents as you go.
+See below for [why a cursor is necessary](#why-is-a-cursor-necessary).
+
+The best cursor to use is the
+[commit timestamp](https://docs.convex.dev/database/advanced/commit-timestamp)
+(Convex ≥ 1.43), as it avoids having to handle out-of-order commits. Do not use
+`_creationTime`. It's assigned when a mutation _starts_, so a row inserted by a
+slow mutation can land _behind_ rows that were already committed and queried by
+the worker.
+
+**Step 1**: Add a field to your schema tracking the commit timestamp for work
+you'll query, and track the cursor somewhere for the worker to access and
+update.
+
+```ts
+// convex/schema.ts
+const schema = defineSchema({
+  myWork: defineTable({
+    updatedAt: v.commitTs(),
+    ...fields
+  }).index("updatedAt", ["updatedAt"]),
+  workerState: defineTable({
+    cursor: v.int64(), // a commit timestamp resolves to a bigint
+    ...
+  })
+  ...
+});
+```
+
+**Step 2:** Set it when inserting or updating a document that needs processing:
+
+```ts
+// On insert/patch, use the placeholder, (resolves to a bigint at commit time)
+await ctx.db.insert("myWork", { updatedAt: ctx.db.vars.commitTs, ... }); await
+ctx.db.patch("myWork", id, { updatedAt: ctx.db.vars.commitTs, ... });
+```
+
+**Step 3:** In the worker query, resume from the cursor and report how far you
+got:
+
+```ts
+const workerState = await getWorkerState(ctx, ...) // however you access it
+const work = await ctx.db
+  .query("myWork")
+  .withIndex("updatedAt", (q) => q.gte("updatedAt", workerState.cursor))
+  .take(BATCH_SIZE);
+if (events.length === 0)  return { kind: "idle" as const };
+const cursor = work.at(-1)!.updatedAt as bigint; // cast is fine here
+return { kind: "work" as const, batch: { cursor, ... } };
+```
+
+Note: the query uses `gte`, not `gt`, since multiple entries may have been
+inserted at the same commit timestamp (they committed transactionally). If our
+batch of work lands in the middle of them, we don't want to skip the rest.
+
+An alternative here is to read the remaining documents from that same commitTs
+and include them in this batch. This has the advantage of ensuring all work
+items added at "once" get processed together, if you can guarantee you can
+process all of that work at once without exceeding transaction limits. See an
+example of that in [the aggregate example](./example/convex/aggregates.ts).
+
+Another option is to use `paginator` from `convex-helpers` to track a cursor
+that captures the index range `[commitTs, _creationTime, _id]`, so you know
+exactly where you left off while still being immune to out-of-order commits.
+
+**Step 4:** In the worker mutation, update the cursor
+
+```ts
+await ctx.db.patch("workerState", workerStateId, { cursor: args.cursor });
+```
+
+#### Why is a cursor necessary?
+
+The reason is due to a technical nuance of how Convex tracks document changes.
+Internally, Convex stores previous versions of documents in indexes for some
+time (~minutes). Old values will not be returned in results to JS, but it can
+slow down queries if they have to scan and discard thousands of these entries.
+
+In the simple example above, a `.take(BATCH_SIZE)` from the front of a table
+followed by deleting all of those documents results in the beinning of the
+table's index to be full of deleted documents, which the next query then scans
+before reaching the next batch of work.
+
+The solution is to keep a cursor to track your progress, and make your next
+query starting at the cursor, allowing it to skip over the region of the index
+full of previous versions or previously-handled work.
+
 ### Use Case: Updating denormalized aggregates
 
-One common pattern for keeping denormalized counts up to date without causing
-database write conflicts is to decouple parallelized code changing many
-documents from a single writer that updates a single aggregate document.
+To keep a denormalized aggregate (like a count or sum) up to date, you can use a
+BatchWorker to process updates in the background, avoiding write conflicts.
 
-You can insert separate updates into a table for processing, and have a
-BatchWorker walk over them and update the overall values. For a full runnable
-example, see [aggregates.ts](./example/convex/aggregates.ts).
+For a full runnable example, see
+[aggregates.ts](./example/convex/aggregates.ts).
 
 Note: this pattern means that the aggregate document does not immediately
 reflect the changes, so you need to be ok with slightly stale data when reading
@@ -224,7 +322,7 @@ the value. If you need the fully-up-to-date value, you have a couple options:
    approach.
 2. Read all the updates and combine them with the stale value dynamically. When
    done from a query, it will stay consistent and reactive. Downside: it may
-   require reading a lot of update documents.
+   require reading a lot of updates.
 3. Use something like the Sharded Counter component, which parallelizes writes
    to a fixed number of documents, and reads all of the shards for the count.
    This is immediately consistent, but requires reading every shard, and needs
@@ -355,10 +453,13 @@ await t.finishAllScheduledFunctions(vi.runAllTimers);
 See [example.test.ts](./example/convex/example.test.ts) and
 [setup.test.ts](./example/convex/setup.test.ts).
 
+Note: Use `convex-test` (≥ 0.0.55-alpha.0) for `v.commitTs()` support.
+
 See the full working examples in the example app:
 [example.ts](./example/convex/example.ts) (basic queue),
-[aggregates.ts](./example/convex/aggregates.ts) (denormalized aggregates), and
-[rateLimited.ts](./example/convex/rateLimited.ts) (async LLM batches).
+[aggregates.ts](./example/convex/aggregates.ts) (denormalized aggregates),
+[rateLimited.ts](./example/convex/rateLimited.ts) (async LLM batches), and
+[cursor.ts](./example/convex/cursor.ts) (the shared `commitTs` cursor helpers).
 
 <!-- END: Include on https://convex.dev/components -->
 
