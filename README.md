@@ -455,12 +455,13 @@ await t.finishAllScheduledFunctions(vi.runAllTimers);
 See [example.test.ts](./example/convex/example.test.ts) and
 [setup.test.ts](./example/convex/setup.test.ts).
 
-One caveat if you use the cursor pattern above: `convex-test` doesn't resolve
-`v.commitTs()` yet — the field always reads back as the unresolved placeholder,
-so `cursorThrough` finds nothing to advance to and every scan starts from the
-front. Tests still pass (the worker deletes what it processed, so the queue
-drains), but they don't exercise the cursor itself; check that against a real
-deployment.
+`convex-test` (≥ 0.0.55-alpha.0) resolves `v.commitTs()` the way the backend
+does — one timestamp per transaction, shared by every row that transaction
+writes — so cursor behavior is testable. The case worth covering is a batch
+boundary landing inside a single transaction's rows: insert more than
+`BATCH_SIZE` of them in one `t.run(...)` and assert nothing is stranded or
+processed twice. That's what separates an inclusive cursor from an exclusive
+one, and it never comes up if each test row is inserted by its own mutation.
 
 See the full working examples in the example app:
 [example.ts](./example/convex/example.ts) (basic queue),
