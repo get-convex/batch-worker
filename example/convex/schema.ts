@@ -48,8 +48,8 @@ export default defineSchema({
   scoreEvents: defineTable({
     team: v.string(),
     points: v.number(),
-    updatedAt: v.commitTs(),
-  }).index("updatedAt", ["updatedAt"]),
+    insertedAt: v.commitTs(),
+  }).index("insertedAt", ["insertedAt"]),
   teamTotals: defineTable({ team: v.string(), total: v.number() }).index(
     "team",
     ["team"],

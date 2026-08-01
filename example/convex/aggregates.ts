@@ -38,20 +38,19 @@ export const recordScore = mutation({
     await ctx.db.insert("scoreEvents", {
       team,
       points,
-      updatedAt: ctx.db.vars.commitTs,
+      insertedAt: ctx.db.vars.commitTs,
     });
     await ping(ctx, components.batchWorker, worker);
   },
 });
 
-const vScoreEvent = v.object({
-  id: v.id("scoreEvents"),
-  team: v.string(),
-  points: v.number(),
-});
-
 const vBatch = {
-  events: v.array(vScoreEvent),
+  events: v.array(
+    v.object({
+      team: v.string(),
+      points: v.number(),
+    }),
+  ),
   cursor: v.int64(),
 };
 
@@ -59,27 +58,35 @@ export const getBatch = internalQuery({
   args: vBatchQueryArgs,
   returns: vBatchResult(vBatch),
   handler: async (ctx, { name }) => {
-    // Resume from the last batch's commit timestamp instead of scanning the
-    // front of the table, which fills with tombstones as we delete. See
-    // cursor.ts for why the cursor is inclusive (`gte`).
+    // Resume from after the last batch's commit timestamp.
+    // We don't delete events, so the cursor allows us to avoid
+    // handling scores multiple times.
     const from = await cursorFor(ctx, name);
     const events = await ctx.db
       .query("scoreEvents")
-      .withIndex("updatedAt", (q) => q.gte("updatedAt", from))
+      .withIndex("insertedAt", (q) => q.gt("insertedAt", from))
       .take(BATCH_SIZE);
     if (events.length === 0) {
       return { kind: "idle" as const };
     }
+    // In order to update all the scores from a transaction at the same time,
+    // we fetch any remaining scores from the same commit timestamp and
+    // include them in the batch.
+    const lastCommitTs = events.at(-1)!.insertedAt as bigint;
+    const remainingEvents = await ctx.db
+      .query("scoreEvents")
+      .withIndex("insertedAt", (q) => q.eq("insertedAt", lastCommitTs))
+      .collect();
+    events.push(...remainingEvents);
     return {
       kind: "work" as const,
       batch: {
         events: events.map((e) => ({
-          id: e._id,
           team: e.team,
           points: e.points,
         })),
         // Rows come back in commit order, so the last one is how far we got.
-        cursor: events.at(-1)!.updatedAt as bigint,
+        cursor: lastCommitTs,
       },
     };
   },
@@ -105,15 +112,13 @@ export const processBatch = internalMutation({
         await ctx.db.insert("teamTotals", { team, total: delta });
       }
     }
-    for (const { id } of events) {
-      await ctx.db.delete("scoreEvents", id);
-    }
     // Only the loop writes the cursor, so this never conflicts with inserts.
     await advanceCursor(ctx, WORKER, cursor);
     // Returning nothing re-runs immediately to drain the rest.
   },
 });
 
+// For the dashboard UI
 export const getTotals = query({
   args: {},
   handler: async (ctx) => {
@@ -124,7 +129,7 @@ export const getTotals = query({
     const pending = (
       await ctx.db
         .query("scoreEvents")
-        .withIndex("updatedAt", (q) => q.gte("updatedAt", from))
+        .withIndex("insertedAt", (q) => q.gt("insertedAt", from))
         .take(1000)
     ).length;
     return {
