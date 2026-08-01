@@ -7,12 +7,7 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
-import {
-  advanceCursor,
-  cursorFor,
-  cursorThrough,
-  resetCursor,
-} from "./cursor.js";
+import { advanceCursor, cursorFor, resetCursor } from "./cursor.js";
 
 // Instrumented worker used by e2e.mjs to measure performance. Kept separate
 // from the README example (different worker `name`) so it doesn't interfere.
@@ -62,7 +57,7 @@ export const getBatch = internalQuery({
       items: v.array(
         v.object({ id: v.id("e2eEvents"), creationTime: v.number() }),
       ),
-      cursor: v.union(v.int64(), v.null()),
+      cursor: v.int64(),
     }),
   ),
   handler: async (ctx, { name }) => {
@@ -83,7 +78,7 @@ export const getBatch = internalQuery({
           id: e._id,
           creationTime: e._creationTime,
         })),
-        cursor: cursorThrough(events),
+        cursor: events.at(-1)!.updatedAt as bigint,
       },
     };
   },
@@ -94,7 +89,7 @@ export const processBatch = internalMutation({
     items: v.array(
       v.object({ id: v.id("e2eEvents"), creationTime: v.number() }),
     ),
-    cursor: v.union(v.int64(), v.null()),
+    cursor: v.int64(),
   },
   handler: async (ctx, { items, cursor }) => {
     const now = Date.now();
@@ -108,9 +103,7 @@ export const processBatch = internalMutation({
     for (const b of items) {
       await ctx.db.delete("e2eEvents", b.id);
     }
-    if (cursor !== null) {
-      await advanceCursor(ctx, WORKER, cursor);
-    }
+    await advanceCursor(ctx, WORKER, cursor);
   },
 });
 

@@ -10,8 +10,8 @@ export default defineSchema({
   // of the table every batch — see cursor.ts.
   events: defineTable({
     value: v.number(),
-    updatedAt: v.commitTs(),
-  }).index("updatedAt", ["updatedAt"]),
+    insertedAt: v.commitTs(),
+  }).index("insertedAt", ["insertedAt"]),
   // A singleton holding the running total, updated by the worker.
   totals: defineTable({
     key: v.string(),

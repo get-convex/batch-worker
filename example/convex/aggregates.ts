@@ -7,7 +7,7 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
-import { advanceCursor, cursorFor, cursorThrough } from "./cursor.js";
+import { advanceCursor, cursorFor } from "./cursor.js";
 
 // Serial processing to update denormalized aggregates without write conflicts.
 //
@@ -50,14 +50,14 @@ const vScoreEvent = v.object({
   points: v.number(),
 });
 
+const vBatch = {
+  events: v.array(vScoreEvent),
+  cursor: v.int64(),
+};
+
 export const getBatch = internalQuery({
   args: vBatchQueryArgs,
-  returns: vBatchResult(
-    v.object({
-      events: v.array(vScoreEvent),
-      cursor: v.union(v.int64(), v.null()),
-    }),
-  ),
+  returns: vBatchResult(vBatch),
   handler: async (ctx, { name }) => {
     // Resume from the last batch's commit timestamp instead of scanning the
     // front of the table, which fills with tombstones as we delete. See
@@ -79,17 +79,14 @@ export const getBatch = internalQuery({
           points: e.points,
         })),
         // Rows come back in commit order, so the last one is how far we got.
-        cursor: cursorThrough(events),
+        cursor: events.at(-1)!.updatedAt as bigint,
       },
     };
   },
 });
 
 export const processBatch = internalMutation({
-  args: {
-    events: v.array(vScoreEvent),
-    cursor: v.union(v.int64(), v.null()),
-  },
+  args: vBatch,
   handler: async (ctx, { events, cursor }) => {
     // Fold the batch into one delta per team first, so we touch each aggregate
     // row once regardless of how many events it covers.
@@ -112,9 +109,7 @@ export const processBatch = internalMutation({
       await ctx.db.delete("scoreEvents", id);
     }
     // Only the loop writes the cursor, so this never conflicts with inserts.
-    if (cursor !== null) {
-      await advanceCursor(ctx, WORKER, cursor);
-    }
+    await advanceCursor(ctx, WORKER, cursor);
     // Returning nothing re-runs immediately to drain the rest.
   },
 });

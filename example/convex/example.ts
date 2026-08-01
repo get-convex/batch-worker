@@ -7,7 +7,7 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
-import { advanceCursor, cursorFor, cursorThrough } from "./cursor.js";
+import { advanceCursor, cursorFor } from "./cursor.js";
 
 // Use distinct `name`s if you want several independent queues backed by the
 // same component.
@@ -24,7 +24,7 @@ export const addEvent = mutation({
   handler: async (ctx, { value }) => {
     // `db.vars.commitTs` resolves to this mutation's commit timestamp, giving
     // the worker something monotonic to cursor through. See cursor.ts.
-    await ctx.db.insert("events", { value, updatedAt: ctx.db.vars.commitTs });
+    await ctx.db.insert("events", { value, insertedAt: ctx.db.vars.commitTs });
     await ping(ctx, components.batchWorker, {
       name: WORKER,
       workQuery: internal.example.getBatch,
@@ -41,12 +41,10 @@ const vEvent = v.object({ id: v.id("events"), value: v.number() });
 
 export const getBatch = internalQuery({
   args: vBatchQueryArgs,
-  returns: vBatchResult(
-    v.object({
-      events: v.array(vEvent),
-      cursor: v.union(v.int64(), v.null()),
-    }),
-  ),
+  returns: vBatchResult({
+    events: v.array(vEvent),
+    cursor: v.int64(),
+  }),
   handler: async (ctx, { name }) => {
     // Pick up where the last batch stopped, rather than from the front of the
     // table — where every row we've already deleted leaves a tombstone to scan
@@ -54,7 +52,7 @@ export const getBatch = internalQuery({
     const from = await cursorFor(ctx, name);
     const events = await ctx.db
       .query("events")
-      .withIndex("updatedAt", (q) => q.gte("updatedAt", from))
+      .withIndex("insertedAt", (q) => q.gte("insertedAt", from))
       .take(BATCH_SIZE);
     if (events.length === 0) {
       return { kind: "idle" as const };
@@ -64,7 +62,7 @@ export const getBatch = internalQuery({
       batch: {
         events: events.map((e) => ({ id: e._id, value: e.value })),
         // Rows come back in commit order, so the last one is how far we got.
-        cursor: cursorThrough(events),
+        cursor: events.at(-1)!.insertedAt as bigint,
       },
     };
   },
@@ -76,7 +74,7 @@ export const getBatch = internalQuery({
  * Returning nothing re-runs immediately to drain the rest.
  */
 export const processBatch = internalMutation({
-  args: { events: v.array(vEvent), cursor: v.union(v.int64(), v.null()) },
+  args: { events: v.array(vEvent), cursor: v.int64() },
   handler: async (ctx, { events, cursor }) => {
     const sum = events.reduce((a, e) => a + e.value, 0);
     const totals = await ctx.db
@@ -99,9 +97,7 @@ export const processBatch = internalMutation({
       await ctx.db.delete("events", id);
     }
     // Only the loop writes the cursor, so this never conflicts with inserts.
-    if (cursor !== null) {
-      await advanceCursor(ctx, WORKER, cursor);
-    }
+    await advanceCursor(ctx, WORKER, cursor);
   },
 });
 
@@ -118,7 +114,7 @@ export const getTotals = query({
     const pending = (
       await ctx.db
         .query("events")
-        .withIndex("updatedAt", (q) => q.gte("updatedAt", from))
+        .withIndex("insertedAt", (q) => q.gte("insertedAt", from))
         .take(1000)
     ).length;
     return {

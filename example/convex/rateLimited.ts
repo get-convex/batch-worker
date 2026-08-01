@@ -9,7 +9,7 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
-import { advanceCursor, cursorFor, cursorThrough } from "./cursor.js";
+import { advanceCursor, cursorFor } from "./cursor.js";
 
 // Batching async LLM requests, paced by a token budget.
 //
@@ -77,14 +77,14 @@ const vLlmRequest = v.object({
   inputTokens: v.number(),
 });
 
+const vBatch = v.object({
+  requests: v.array(vLlmRequest),
+  cursor: v.int64(),
+});
+
 export const getBatch = internalQuery({
   args: vBatchQueryArgs,
-  returns: vBatchResult(
-    v.object({
-      requests: v.array(vLlmRequest),
-      cursor: v.union(v.int64(), v.null()),
-    }),
-  ),
+  returns: vBatchResult(vBatch),
   handler: async (ctx, { name }) => {
     // TODO: also pick up "started" requests whose action never reported back
     // (e.g. `startedAt` older than some timeout) so a crashed batch isn't
@@ -113,7 +113,7 @@ export const getBatch = internalQuery({
           inputTokens: r.inputTokens,
         })),
         // Rows come back in commit order, so the last one is how far we got.
-        cursor: cursorThrough(pending),
+        cursor: pending.at(-1)!.updatedAt as bigint,
       },
     };
   },
@@ -124,10 +124,7 @@ export const getBatch = internalQuery({
  * started, and schedule the LLM call for when the budget clears.
  */
 export const startBatch = internalMutation({
-  args: {
-    requests: v.array(vLlmRequest),
-    cursor: v.union(v.int64(), v.null()),
-  },
+  args: vBatch,
   handler: async (ctx, { requests, cursor }) => {
     const totalInputTokens = requests.reduce((a, r) => a + r.inputTokens, 0);
 
@@ -151,9 +148,7 @@ export const startBatch = internalMutation({
         updatedAt: ctx.db.vars.commitTs,
       });
     }
-    if (cursor !== null) {
-      await advanceCursor(ctx, WORKER, cursor);
-    }
+    await advanceCursor(ctx, WORKER, cursor);
 
     // Make the actual call when the reservation clears. Pass the prompts
     // through so the action doesn't have to re-read them.
