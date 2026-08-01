@@ -69,15 +69,17 @@ export const getBatch = internalQuery({
     if (events.length === 0) {
       return { kind: "idle" as const };
     }
-    // In order to update all the scores from a transaction at the same time,
-    // we fetch any remaining scores from the same commit timestamp and
-    // include them in the batch.
+    // The cursor is exclusive (`gt`), so a batch must not stop in the middle of
+    // a commit timestamp — everything one transaction inserted shares one, and
+    // whatever we left behind would be skipped. Read the rest of that tie in
+    // (skipping the rows we already have) so the batch ends on a boundary.
     const lastCommitTs = events.at(-1)!.insertedAt as bigint;
+    const taken = new Set(events.map((e) => e._id));
     const remainingEvents = await ctx.db
       .query("scoreEvents")
       .withIndex("insertedAt", (q) => q.eq("insertedAt", lastCommitTs))
       .collect();
-    events.push(...remainingEvents);
+    events.push(...remainingEvents.filter((e) => !taken.has(e._id)));
     return {
       kind: "work" as const,
       batch: {
