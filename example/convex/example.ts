@@ -22,8 +22,9 @@ const BATCH_SIZE = 10;
 export const addEvent = mutation({
   args: { value: v.number() },
   handler: async (ctx, { value }) => {
-    // `db.vars.commitTs` resolves to this mutation's commit timestamp, giving
-    // the worker something monotonic to cursor through. See cursor.ts.
+    // `db.vars.commitTs` resolves to this mutation's commit timestamp. Every row
+    // a mutation writes shares one value, and nothing can commit later with a
+    // smaller one — that's what makes it safe to cursor on. See cursor.ts.
     await ctx.db.insert("events", { value, insertedAt: ctx.db.vars.commitTs });
     await ping(ctx, components.batchWorker, {
       name: WORKER,

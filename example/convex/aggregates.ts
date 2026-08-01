@@ -33,8 +33,9 @@ const worker = {
 export const recordScore = mutation({
   args: { team: v.string(), points: v.number() },
   handler: async (ctx, { team, points }) => {
-    // `db.vars.commitTs` resolves to this mutation's commit timestamp, giving
-    // the worker something monotonic to cursor through. See cursor.ts.
+    // `db.vars.commitTs` resolves to this mutation's commit timestamp. Every row
+    // a mutation writes shares one value — getBatch below reads a whole tie at
+    // once — and nothing can commit later with a smaller one. See cursor.ts.
     await ctx.db.insert("scoreEvents", {
       team,
       points,
