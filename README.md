@@ -275,13 +275,12 @@ batch of work lands in the middle of them, we don't want to skip the rest.
 An alternative here is to read the remaining documents from that same commitTs
 and include them in this batch. This has the advantage of ensuring all work
 items added at "once" get processed together, if you can guarantee you can
-process all of that work at once without exceeding transaction limits. See
-an example of that in [the aggregate example](./example/convex/aggregates.ts).
+process all of that work at once without exceeding transaction limits. See an
+example of that in [the aggregate example](./example/convex/aggregates.ts).
 
-Another option is to use `paginator` from `convex-helpers` to track a
-cursor that captures the index range `[commitTs, _creationTime, _id]`, so you
-know exactly where you left off while still being immune to out-of-order
-commits.
+Another option is to use `paginator` from `convex-helpers` to track a cursor
+that captures the index range `[commitTs, _creationTime, _id]`, so you know
+exactly where you left off while still being immune to out-of-order commits.
 
 **Step 4:** In the worker mutation, update the cursor
 
@@ -307,10 +306,11 @@ full of previous versions or previously-handled work.
 
 ### Use Case: Updating denormalized aggregates
 
-To keep a denormalized aggregate (like a count or sum) up to date, you can use
-a BatchWorker to process updates in the background, avoiding write conflicts.
+To keep a denormalized aggregate (like a count or sum) up to date, you can use a
+BatchWorker to process updates in the background, avoiding write conflicts.
 
-For a full runnable example, see [aggregates.ts](./example/convex/aggregates.ts).
+For a full runnable example, see
+[aggregates.ts](./example/convex/aggregates.ts).
 
 Note: this pattern means that the aggregate document does not immediately
 reflect the changes, so you need to be ok with slightly stale data when reading
@@ -391,10 +391,8 @@ If your work query or worker mutation throws, the loop dies and the liveness
 monitor restarts it after ~`monitorLagMs` — and since the unprocessed rows are
 still in your table, the query will hand out the **same batch again**. That
 gives you at-least-once processing, but it also means one poison item that
-always throws can wedge the queue. (A cursor doesn't change that: it's advanced
-by the same mutation that processes the batch, so a throw rolls it back too.)
-For work that can fail per item, catch errors inside the worker mutation, and
-isolate bad docs in a table for async debugging.
+always throws can wedge the queue. For work that can fail per item, catch errors
+inside the worker mutation, and isolate bad docs in a table for async debugging.
 
 This is a low-level primitive, relative to components like Workpool or Workflow,
 so you have to handle exceptional cases yourself.
@@ -455,13 +453,7 @@ await t.finishAllScheduledFunctions(vi.runAllTimers);
 See [example.test.ts](./example/convex/example.test.ts) and
 [setup.test.ts](./example/convex/setup.test.ts).
 
-`convex-test` (≥ 0.0.55-alpha.0) resolves `v.commitTs()` the way the backend
-does — one timestamp per transaction, shared by every row that transaction
-writes — so cursor behavior is testable. The case worth covering is a batch
-boundary landing inside a single transaction's rows: insert more than
-`BATCH_SIZE` of them in one `t.run(...)` and assert nothing is stranded or
-processed twice. That's what separates an inclusive cursor from an exclusive
-one, and it never comes up if each test row is inserted by its own mutation.
+Note: Use `convex-test` (≥ 0.0.55-alpha.0) for `v.commitTs()` support.
 
 See the full working examples in the example app:
 [example.ts](./example/convex/example.ts) (basic queue),
