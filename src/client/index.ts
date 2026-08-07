@@ -134,7 +134,7 @@ export async function getCursor<Cursor = DefaultCursor>(
 export async function setCursor<Cursor = DefaultCursor>(
   ctx: MutationCtx | ActionCtx,
   component: ComponentApi,
-  args: { name: string; cursor?: Cursor },
+  args: { name: string; cursor?: Cursor | undefined },
 ): Promise<void> {
   await ctx.runMutation(component.lib.setCursor, args);
 }

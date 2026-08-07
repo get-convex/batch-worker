@@ -70,13 +70,22 @@ export const cursor = query({
  * state: the loop writes this document every iteration, so calling this while
  * the worker is busy is liable to hit a write conflict. Prefer returning a
  * cursor from the work query or worker mutation.
+ *
+ * Throws if the worker doesn't exist yet — the cursor lives on the worker, so
+ * there'd be nowhere to put it and the call would silently do nothing. `ping`
+ * creates the worker; `stop` it first if you need to seed a cursor before it
+ * processes anything.
  */
 export const setCursor = mutation({
   args: { name: v.string(), cursor: v.optional(v.any()) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const worker = await getWorker(ctx, args.name);
-    if (!worker) return;
+    if (!worker) {
+      throw new Error(
+        `[setCursor] no worker named "${args.name}" — ping it first`,
+      );
+    }
     const state = await getOrCreateWorkerState(ctx, worker);
     // Patching `undefined` removes the field.
     await ctx.db.patch("workerState", state._id, { cursor: args.cursor });

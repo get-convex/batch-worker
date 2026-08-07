@@ -4,10 +4,10 @@ import { v } from "convex/values";
 export default defineSchema({
   // A simple work queue: each row is one event to be summed.
   //
-  // `updatedAt` is written as `ctx.db.vars.commitTs` and resolves, when the
+  // `insertedAt` is written as `ctx.db.vars.commitTs` and resolves, when the
   // writing mutation commits, to an int64 ordered by commit order. Indexed so
-  // the worker can resume where it left off instead of scanning from the front
-  // of the table every batch — see cursor.ts.
+  // the worker can resume from the cursor it last returned instead of scanning
+  // from the front of the table every batch.
   events: defineTable({
     value: v.number(),
     insertedAt: v.commitTs(),
@@ -18,14 +18,6 @@ export default defineSchema({
     total: v.number(),
     count: v.number(),
   }).index("key", ["key"]),
-
-  // Where each worker's next scan should start, one row per worker name. This is
-  // a plain int64 — the commit timestamp some *other* row resolved to, copied
-  // here — not a `v.commitTs()` field of its own. See cursor.ts.
-  cursors: defineTable({
-    name: v.string(),
-    commitTs: v.int64(),
-  }).index("name", ["name"]),
 
   // --- Rate-limited async LLM batches (see rateLimited.ts) ---
   llmRequests: defineTable({

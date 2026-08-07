@@ -1,5 +1,10 @@
 import { v } from "convex/values";
-import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
+import {
+  getCursor,
+  ping,
+  vBatchQueryArgs,
+  vBatchResult,
+} from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -7,7 +12,6 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
-import { advanceCursor, cursorFor } from "./cursor.js";
 
 // Serial processing to update denormalized aggregates without write conflicts.
 //
@@ -52,20 +56,18 @@ const vBatch = {
       points: v.number(),
     }),
   ),
-  cursor: v.int64(),
 };
 
 export const getBatch = internalQuery({
   args: vBatchQueryArgs,
   returns: vBatchResult(vBatch),
-  handler: async (ctx, { name }) => {
+  handler: async (ctx, { cursor }) => {
     // Resume from after the last batch's commit timestamp.
     // We don't delete events, so the cursor allows us to avoid
     // handling scores multiple times.
-    const from = await cursorFor(ctx, name);
     const events = await ctx.db
       .query("scoreEvents")
-      .withIndex("insertedAt", (q) => q.gt("insertedAt", from))
+      .withIndex("insertedAt", (q) => q.gt("insertedAt", cursor ?? 0n))
       .take(BATCH_SIZE);
     if (events.length === 0) {
       return { kind: "idle" as const };
@@ -88,16 +90,16 @@ export const getBatch = internalQuery({
           team: e.team,
           points: e.points,
         })),
-        // Rows come back in commit order, so the last one is how far we got.
-        cursor: lastCommitTs,
       },
+      // Rows come back in commit order, so the last one is how far we got.
+      cursor: lastCommitTs,
     };
   },
 });
 
 export const processBatch = internalMutation({
   args: vBatch,
-  handler: async (ctx, { events, cursor }) => {
+  handler: async (ctx, { events }) => {
     // Fold the batch into one delta per team first, so we touch each aggregate
     // row once regardless of how many events it covers.
     const deltas = new Map<string, number>();
@@ -115,8 +117,6 @@ export const processBatch = internalMutation({
         await ctx.db.insert("teamTotals", { team, total: delta });
       }
     }
-    // Only the loop writes the cursor, so this never conflicts with inserts.
-    await advanceCursor(ctx, WORKER, cursor);
     // Returning nothing re-runs immediately to drain the rest.
   },
 });
@@ -127,8 +127,9 @@ export const getTotals = query({
   handler: async (ctx) => {
     const totals = await ctx.db.query("teamTotals").take(100);
     // Scores still queued, waiting to be folded into the aggregates. Reading
-    // from the cursor keeps this off the tombstones too.
-    const from = await cursorFor(ctx, WORKER);
+    // from the worker's cursor keeps this off the tombstones too.
+    const from =
+      (await getCursor(ctx, components.batchWorker, { name: WORKER })) ?? 0n;
     const pending = (
       await ctx.db
         .query("scoreEvents")
