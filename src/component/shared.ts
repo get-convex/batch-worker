@@ -210,3 +210,56 @@ export type WorkerResult<Cursor = DefaultCursor> = null | {
   debounceMs?: number;
   cursor?: Cursor;
 };
+
+/**
+ * Builds all four validators for one worker from a single declaration, so the
+ * query and the mutation can't drift apart.
+ *
+ * Use it when your cursor isn't a commit timestamp — `vBatchQueryArgs` and
+ * `vBatchResult` only cover the default. It also pins the batch shape in one
+ * place, rather than repeating it in the query's `returns` and the mutation's
+ * `args`.
+ *
+ * @example
+ * ```ts
+ * const { vQueryArgs, vQueryReturns, vMutationArgs, vMutationReturns } =
+ *   batchValidators({
+ *     batch: { ids: v.array(v.id("tasks")) },
+ *     cursor: v.string(), // e.g. a `paginator` cursor
+ *   });
+ *
+ * export const getBatch = internalQuery({
+ *   args: vQueryArgs,
+ *   returns: vQueryReturns,
+ *   handler: async (ctx, { cursor }) => ...,
+ * });
+ *
+ * export const processBatch = internalMutation({
+ *   args: vMutationArgs,
+ *   returns: vMutationReturns,
+ *   handler: async (ctx, { ids }) => ...,
+ * });
+ * ```
+ */
+export function batchValidators<
+  B extends Validator<any, "required", any> | PropertyValidators,
+  C extends Validator<any, "required", any> = VCommitTs,
+>(spec: { batch: B; cursor?: C }) {
+  const cursor = (spec.cursor ?? vDefaultCursor) as C;
+  return {
+    /** Your work query's `args`: `{ name, cursor? }`. */
+    vQueryArgs: v.object({ name: v.string(), cursor: v.optional(cursor) }),
+    /** Your work query's `returns`: a batch (with an optional cursor), or idle. */
+    vQueryReturns: vBatchResult(spec.batch, cursor),
+    /** Your worker mutation's `args` — the batch the query returns. */
+    vMutationArgs: asObjectValidator(spec.batch),
+    /** Your worker mutation's `returns`: null, or `{ debounceMs?, cursor? }`. */
+    vMutationReturns: v.union(
+      v.null(),
+      v.object({
+        debounceMs: v.optional(v.number()),
+        cursor: v.optional(cursor),
+      }),
+    ),
+  };
+}

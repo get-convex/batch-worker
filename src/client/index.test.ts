@@ -13,6 +13,7 @@ import {
   queryGeneric,
 } from "convex/server";
 import {
+  batchValidators,
   getCursor,
   ping,
   setCursor,
@@ -28,10 +29,14 @@ const schema = defineSchema({
   marks: defineTable({ seq: v.int64() }).index("seq", ["seq"]),
   // One row per batch, so a test can see how the cursor sliced the marks up.
   batches: defineTable({ seqs: v.array(v.int64()) }),
+  // For the custom-cursor test: the cursor here is a string, not a timestamp.
+  letters: defineTable({ letter: v.string() }).index("letter", ["letter"]),
+  letterBatches: defineTable({ letters: v.array(v.string()) }),
 });
 
 const WORKER = "items";
 const CURSOR_WORKER = "marks";
+const LETTER_WORKER = "letters";
 
 export const getBatch = internalQueryGeneric({
   args: vBatchQueryArgs,
@@ -170,6 +175,66 @@ export const batches = queryGeneric({
     (await ctx.db.query("batches").take(1000)).map((b) => b.seqs),
 });
 
+// ── A worker whose cursor isn't a commit timestamp ──────────────────────────
+
+const letterValidators = batchValidators({
+  batch: { letters: v.array(v.string()) },
+  cursor: v.string(),
+});
+
+export const getLetters = internalQueryGeneric({
+  args: letterValidators.vQueryArgs,
+  returns: letterValidators.vQueryReturns,
+  handler: async (ctx, { cursor }) => {
+    const rows = await ctx.db
+      .query("letters")
+      .withIndex("letter", (q) => q.gt("letter", cursor ?? ""))
+      .take(BATCH);
+    if (rows.length === 0) {
+      return { kind: "idle" as const, cooldownMs: 100, pollIntervalMs: 10 };
+    }
+    return {
+      kind: "work" as const,
+      batch: { letters: rows.map((r) => r.letter) },
+      cursor: rows.at(-1)!.letter,
+    };
+  },
+});
+
+export const processLetters = internalMutationGeneric({
+  args: letterValidators.vMutationArgs,
+  returns: letterValidators.vMutationReturns,
+  handler: async (ctx, { letters }) => {
+    await ctx.db.insert("letterBatches", { letters });
+    return null;
+  },
+});
+
+export const enqueueLetter = mutationGeneric({
+  args: { letter: v.string() },
+  handler: async (ctx, { letter }) => {
+    await ctx.db.insert("letters", { letter });
+    await ping(ctx, components.batchWorker, {
+      name: LETTER_WORKER,
+      config: { debounceMs: 0 },
+      workQuery: testApi.getLetters,
+      workerMutation: testApi.processLetters,
+    });
+  },
+});
+
+export const letterCursor = queryGeneric({
+  args: {},
+  handler: async (ctx) =>
+    getCursor<string>(ctx, components.batchWorker, { name: LETTER_WORKER }),
+});
+
+export const letterBatches = queryGeneric({
+  args: {},
+  handler: async (ctx) =>
+    (await ctx.db.query("letterBatches").take(1000)).map((b) => b.letters),
+});
+
 const testApi = (
   anyApi as unknown as ApiFromModules<{
     "index.test": {
@@ -187,6 +252,11 @@ const testApi = (
       markCursor: typeof markCursor;
       setMarkCursor: typeof setMarkCursor;
       batches: typeof batches;
+      getLetters: typeof getLetters;
+      processLetters: typeof processLetters;
+      enqueueLetter: typeof enqueueLetter;
+      letterCursor: typeof letterCursor;
+      letterBatches: typeof letterBatches;
     };
   }>
 )["index.test"];
@@ -273,5 +343,19 @@ describe("Cursor", () => {
 
     await t.mutation(testApi.setMarkCursor, {});
     expect(await t.query(testApi.markCursor, {})).toBe(null);
+  });
+
+  test("can be a type other than a commit timestamp", async () => {
+    const t = initConvexTest(schema);
+    for (const letter of ["a", "b", "c"]) {
+      await t.mutation(testApi.enqueueLetter, { letter });
+    }
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    expect(await t.query(testApi.letterBatches, {})).toEqual([
+      ["a", "b"],
+      ["c"],
+    ]);
+    expect(await t.query(testApi.letterCursor, {})).toBe("c");
   });
 });

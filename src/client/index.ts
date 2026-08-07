@@ -17,6 +17,7 @@ import {
 } from "../component/shared.js";
 
 export {
+  batchValidators,
   vBatchQueryArgs,
   vBatchResult,
   vDefaultCursor,
