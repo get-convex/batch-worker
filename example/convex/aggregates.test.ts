@@ -96,7 +96,9 @@ describe("serial aggregate updates", () => {
       ctx.db.query("scoreEvents").withIndex("insertedAt").collect(),
     );
     const cursor = await t.run((ctx) =>
-      ctx.runQuery(components.batchWorker.lib.getCursor, { name: "aggregates" }),
+      ctx.runQuery(components.batchWorker.lib.getCursor, {
+        name: "aggregates",
+      }),
     );
     expect(cursor).toBe(scores.at(-1)!.insertedAt);
   });

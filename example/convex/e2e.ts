@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
+import { defineBatchWorkerValidators, ping } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -51,15 +51,18 @@ export const enqueue = mutation({
   },
 });
 
-export const getBatch = internalQuery({
-  args: vBatchQueryArgs,
-  returns: vBatchResult(
-    v.object({
+const { vQueryArgs, vQueryReturns, vMutationArgs } =
+  defineBatchWorkerValidators({
+    batch: {
       items: v.array(
         v.object({ id: v.id("e2eEvents"), creationTime: v.number() }),
       ),
-    }),
-  ),
+    },
+  });
+
+export const getBatch = internalQuery({
+  args: vQueryArgs,
+  returns: vQueryReturns,
   handler: async (ctx, { cursor }) => {
     // Resume from the cursor so batch reads stay a fixed size no matter how
     // many rows (and tombstones) the harness has already churned through.
@@ -84,11 +87,7 @@ export const getBatch = internalQuery({
 });
 
 export const processBatch = internalMutation({
-  args: {
-    items: v.array(
-      v.object({ id: v.id("e2eEvents"), creationTime: v.number() }),
-    ),
-  },
+  args: vMutationArgs,
   handler: async (ctx, { items }) => {
     const now = Date.now();
     const latencies = items.map((b) => now - b.creationTime);

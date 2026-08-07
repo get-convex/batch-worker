@@ -56,10 +56,11 @@ component too: call `component.use(batchWorker)` in your component's
 
 ## Usage
 
-Insert work into your own table, then call `ping`. Provide a query (typed with
-`vBatchQueryArgs` / `vBatchResult`) that returns the next batch or `idle`, and a
-mutation that processes it. The query's `batch` shape must match the mutation's
-args. (`kind: "work"` is optional — returning `{ batch }` alone also works.)
+Insert work into your own table, then call `ping`. Provide a query that returns
+the next batch or `idle`, and a mutation that processes it.
+`defineBatchWorkerValidators` declares the batch shape once and hands you all
+four validators, so the two halves can't drift apart. (`kind: "work"` is
+optional — returning `{ batch }` alone also works.)
 
 Alongside the batch, the query returns a **cursor** saying how far it got. The
 component commits it with the batch and hands it back as `args.cursor` next
@@ -68,7 +69,7 @@ time, so each scan resumes where the last one stopped. See
 
 ```ts
 import { v } from "convex/values";
-import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
+import { defineBatchWorkerValidators, ping } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api";
 import { internalMutation, internalQuery, mutation } from "./_generated/server";
 
@@ -91,10 +92,15 @@ export const addEvent = mutation({
 
 const vEvents = v.array(v.object({ id: v.id("events"), value: v.number() }));
 
+// One declaration → the query's args (`{ name, cursor? }`) and returns, plus
+// the mutation's args. `cursor` defaults to a commit timestamp.
+const { vQueryArgs, vQueryReturns, vMutationArgs } =
+  defineBatchWorkerValidators({ batch: { events: vEvents } });
+
 // Return the next batch of work, or `idle` when there's nothing to do.
 export const getBatch = internalQuery({
-  args: vBatchQueryArgs, // { name, cursor? } — one query can serve many queues
-  returns: vBatchResult({ events: vEvents }),
+  args: vQueryArgs, // `name` lets one query serve many queues
+  returns: vQueryReturns,
   handler: async (ctx, { cursor }) => {
     // Resume where the last batch stopped instead of rescanning from the front.
     const events = await ctx.db
@@ -117,7 +123,7 @@ export const getBatch = internalQuery({
 
 // Process one batch. The worker owns cleanup — delete what you process!
 export const processBatch = internalMutation({
-  args: { events: vEvents },
+  args: vMutationArgs,
   handler: async (ctx, { events }) => {
     for (const { value, id } of events) {
       // ... do the work (sum, call an API, schedule downstream jobs, etc.) ...
@@ -268,18 +274,24 @@ is processed together — if you can be sure that fits in one transaction. See
 
 The cursor can be any Convex value — for instance a `paginator` cursor from
 `convex-helpers`, which captures the index range
-`[commitTs, _creationTime, _id]` so you know exactly where you left off.
-`vBatchQueryArgs` and `vBatchResult` only cover the default; for anything else,
-build all four validators from one declaration with `batchValidators`, so the
-query and the mutation can't drift apart:
+`[commitTs, _creationTime, _id]` so you know exactly where you left off. Pass
+`cursor` to `defineBatchWorkerValidators` and all four validators pick it up:
 
 ```ts
 const { vQueryArgs, vQueryReturns, vMutationArgs, vMutationReturns } =
-  batchValidators({
+  defineBatchWorkerValidators({
     batch: { ids: v.array(v.id("myWork")) },
     cursor: v.string(),
   });
 ```
+
+`ping` takes the cursor's type from the work query's `cursor` arg and checks the
+two return positions against it, so a mismatch points at one place.
+
+> The older `vBatchQueryArgs`, `vBatchResult` and `vWorkerResult` are
+> deprecated. They still work, but each is fixed to the commit-timestamp cursor
+> and they're declared separately enough that the query and mutation can drift
+> apart.
 
 #### Adjusting the cursor from the worker mutation
 

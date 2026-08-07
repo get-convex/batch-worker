@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { SECOND, RateLimiter } from "@convex-dev/rate-limiter";
-import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
+import { defineBatchWorkerValidators, ping } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalAction,
@@ -61,7 +61,7 @@ export const submitRequest = mutation({
       inputTokens,
       state: "pending",
       // Lets the worker cursor through pending requests in commit order rather
-      // than rescanning from the front of the range. See cursor.ts.
+      // than rescanning from the front of the range.
       updatedAt: ctx.db.vars.commitTs,
     });
     await ping(ctx, components.batchWorker, worker);
@@ -76,13 +76,12 @@ const vLlmRequest = v.object({
   inputTokens: v.number(),
 });
 
-const vBatch = v.object({
-  requests: v.array(vLlmRequest),
-});
+const { vQueryArgs, vQueryReturns, vMutationArgs, vMutationReturns } =
+  defineBatchWorkerValidators({ batch: { requests: v.array(vLlmRequest) } });
 
 export const getBatch = internalQuery({
-  args: vBatchQueryArgs,
-  returns: vBatchResult(vBatch),
+  args: vQueryArgs,
+  returns: vQueryReturns,
   handler: async (ctx, { cursor }) => {
     // TODO: also pick up "started" requests whose action never reported back
     // (e.g. `startedAt` older than some timeout) so a crashed batch isn't
@@ -121,7 +120,8 @@ export const getBatch = internalQuery({
  * started, and schedule the LLM call for when the budget clears.
  */
 export const startBatch = internalMutation({
-  args: vBatch,
+  args: vMutationArgs,
+  returns: vMutationReturns,
   handler: async (ctx, { requests }) => {
     const totalInputTokens = requests.reduce((a, r) => a + r.inputTokens, 0);
 

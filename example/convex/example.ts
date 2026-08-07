@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
+import { defineBatchWorkerValidators, ping } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -23,7 +23,7 @@ export const addEvent = mutation({
   handler: async (ctx, { value }) => {
     // `db.vars.commitTs` resolves to this mutation's commit timestamp. Every row
     // a mutation writes shares one value, and nothing can commit later with a
-    // smaller one — that's what makes it safe to cursor on. See cursor.ts.
+    // smaller one — that's what makes it safe to cursor on.
     await ctx.db.insert("events", { value, insertedAt: ctx.db.vars.commitTs });
     await ping(ctx, components.batchWorker, {
       name: WORKER,
@@ -34,14 +34,22 @@ export const addEvent = mutation({
 });
 
 /**
- * The work query: returns the next batch of work, or `idle` when the queue is
- * empty. Its `batch` shape lines up with `processBatch`'s args.
+ * One declaration of the batch shape gives the query's args and returns, and
+ * the mutation's args — so the two halves can't drift apart. The cursor
+ * defaults to a commit timestamp.
  */
 const vEvent = v.object({ id: v.id("events"), value: v.number() });
 
+const { vQueryArgs, vQueryReturns, vMutationArgs } =
+  defineBatchWorkerValidators({ batch: { events: v.array(vEvent) } });
+
+/**
+ * The work query: returns the next batch of work, or `idle` when the queue is
+ * empty.
+ */
 export const getBatch = internalQuery({
-  args: vBatchQueryArgs,
-  returns: vBatchResult({ events: v.array(vEvent) }),
+  args: vQueryArgs,
+  returns: vQueryReturns,
   handler: async (ctx, { cursor }) => {
     // Pick up where the last batch stopped, rather than from the front of the
     // table — where every row we've already deleted leaves a tombstone to scan
@@ -70,7 +78,7 @@ export const getBatch = internalQuery({
  * Returning nothing re-runs immediately to drain the rest.
  */
 export const processBatch = internalMutation({
-  args: { events: v.array(vEvent) },
+  args: vMutationArgs,
   handler: async (ctx, { events }) => {
     const sum = events.reduce((a, e) => a + e.value, 0);
     const totals = await ctx.db

@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
+import { defineBatchWorkerValidators, ping } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -34,7 +34,7 @@ export const recordScore = mutation({
   handler: async (ctx, { team, points }) => {
     // `db.vars.commitTs` resolves to this mutation's commit timestamp. Every row
     // a mutation writes shares one value — getBatch below reads a whole tie at
-    // once — and nothing can commit later with a smaller one. See cursor.ts.
+    // once — and nothing can commit later with a smaller one.
     await ctx.db.insert("scoreEvents", {
       team,
       points,
@@ -44,18 +44,21 @@ export const recordScore = mutation({
   },
 });
 
-const vBatch = {
-  events: v.array(
-    v.object({
-      team: v.string(),
-      points: v.number(),
-    }),
-  ),
-};
+const { vQueryArgs, vQueryReturns, vMutationArgs } =
+  defineBatchWorkerValidators({
+    batch: {
+      events: v.array(
+        v.object({
+          team: v.string(),
+          points: v.number(),
+        }),
+      ),
+    },
+  });
 
 export const getBatch = internalQuery({
-  args: vBatchQueryArgs,
-  returns: vBatchResult(vBatch),
+  args: vQueryArgs,
+  returns: vQueryReturns,
   handler: async (ctx, { cursor }) => {
     // Resume from after the last batch's commit timestamp.
     // We don't delete events, so the cursor allows us to avoid
@@ -93,7 +96,7 @@ export const getBatch = internalQuery({
 });
 
 export const processBatch = internalMutation({
-  args: vBatch,
+  args: vMutationArgs,
   handler: async (ctx, { events }) => {
     // Fold the batch into one delta per team first, so we touch each aggregate
     // row once regardless of how many events it covers.
