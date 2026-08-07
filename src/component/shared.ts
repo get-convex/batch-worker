@@ -3,6 +3,7 @@ import {
   v,
   type Infer,
   type PropertyValidators,
+  type VCommitTs,
   type Validator,
 } from "convex/values";
 
@@ -66,17 +67,50 @@ export type Status = Infer<typeof vStatus>;
 // ── The work query / worker mutation contract ──────────────────────────────
 
 /**
- * The args your work query receives. Today just the worker's `name`, so a
- * single query function can serve multiple named queues. Use this as your
- * query's `args` validator for forward compatibility.
+ * The default cursor type: a commit timestamp, as written by
+ * `ctx.db.vars.commitTs` and read back as a `bigint`.
+ *
+ * Typing it as `v.commitTs()` rather than `v.int64()` means a row's timestamp
+ * field can be handed straight back as the cursor without a cast, since that's
+ * exactly the type such a field has.
  */
-export const vBatchQueryArgs = v.object({ name: v.string() });
-export type BatchQueryArgs = Infer<typeof vBatchQueryArgs>;
+export const vDefaultCursor = v.commitTs();
+export type DefaultCursor = Infer<typeof vDefaultCursor>;
+
+/**
+ * The args your work query receives: the worker's `name` (so a single query
+ * function can serve multiple named queues) and the `cursor` this worker last
+ * committed, if any. Use this as your query's `args` validator for forward
+ * compatibility.
+ *
+ * The cursor is whatever your query last returned alongside a batch that went
+ * on to commit — see {@link vBatchResult}. It's absent until then. To use a
+ * cursor type other than a commit timestamp, build your validators with
+ * `batchValidators` instead.
+ */
+export const vBatchQueryArgs = v.object({
+  name: v.string(),
+  cursor: v.optional(vDefaultCursor),
+});
+export type BatchQueryArgs<Cursor = DefaultCursor> = {
+  name: string;
+  cursor?: Cursor;
+};
 
 /**
  * Builds the validator for what your work query returns: either a batch of
  * work to process, or an explicit `idle` (optionally with a `timeoutMs` hint
  * for when to check again — e.g. when the next item is scheduled).
+ *
+ * Alongside a batch you may return a `cursor` saying how far this batch got.
+ * The component commits it with the batch and hands it back as `args.cursor`
+ * on the next call, so the next scan can resume there instead of rescanning
+ * from the front. It is *only* committed if the worker mutation commits.
+ *
+ * There's deliberately no cursor on the `idle` branch: idle means the loop may
+ * never run again until something pings it. If you scanned a stretch worth
+ * skipping past but found nothing to do, return `work` with an empty batch and
+ * the advanced cursor instead.
  *
  * @example
  * export const getBatch = internalQuery({
@@ -87,11 +121,13 @@ export type BatchQueryArgs = Infer<typeof vBatchQueryArgs>;
  */
 export function vBatchResult<
   B extends Validator<any, "required", any> | PropertyValidators,
->(batch: B) {
+  C extends Validator<any, "required", any> = VCommitTs,
+>(batch: B, cursor?: C) {
   return v.union(
     v.object({
       kind: v.optional(v.literal("work")),
       batch: asObjectValidator(batch),
+      cursor: v.optional((cursor ?? vDefaultCursor) as C),
     }),
     v.object({
       kind: v.literal("idle"),
@@ -120,8 +156,16 @@ export function vBatchResult<
  *
  * @typeParam Batch - the shape passed to your worker mutation.
  */
-export type BatchResult<Batch> =
-  | { kind: "work"; batch: Batch }
+export type BatchResult<Batch, Cursor = DefaultCursor> =
+  | {
+      kind?: "work";
+      batch: Batch;
+      /**
+       * How far this batch got. Committed with the batch and passed to the
+       * next query call as `args.cursor`. Omit to leave the cursor untouched.
+       */
+      cursor?: Cursor;
+    }
   | {
       kind: "idle";
       /**
@@ -151,6 +195,18 @@ export const vWorkerResult = v.union(
      * debounce / batch.
      */
     debounceMs: v.optional(v.number()),
+    /**
+     * Overrides the cursor the work query returned. Return one when the batch
+     * only made partial progress and you can derive how far you actually got
+     * (e.g. from a per-item timestamp carried in the batch), or
+     * `ctx.db.vars.commitTs` to mean "everything up to now" — the worker
+     * mutation shares the loop's transaction, so it resolves to the same
+     * timestamp this batch stamped on its own rows.
+     */
+    cursor: v.optional(vDefaultCursor),
   }),
 );
-export type WorkerResult = Infer<typeof vWorkerResult>;
+export type WorkerResult<Cursor = DefaultCursor> = null | {
+  debounceMs?: number;
+  cursor?: Cursor;
+};

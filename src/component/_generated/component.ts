@@ -24,6 +24,13 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     lib: {
+      cursor: FunctionReference<
+        "query",
+        "internal",
+        { name: string },
+        any,
+        Name
+      >;
       ping: FunctionReference<
         "mutation",
         "internal",
@@ -33,6 +40,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           workQuery: string;
           workerMutation: string;
         },
+        null,
+        Name
+      >;
+      setCursor: FunctionReference<
+        "mutation",
+        "internal",
+        { cursor?: any; name: string },
         null,
         Name
       >;

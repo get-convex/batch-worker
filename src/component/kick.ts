@@ -1,3 +1,4 @@
+import type { Value } from "convex/values";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./functions.js";
@@ -165,14 +166,15 @@ export async function continueRunning(
   ctx: MutationCtx,
   worker: Doc<"workers">,
   delayMs: number,
-  lastWorkTs?: number,
+  opts?: { lastWorkTs?: number | undefined; cursor?: Value | undefined },
 ): Promise<void> {
   if (worker.status.kind !== "running") {
     await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
   }
   await scheduleLoopRun(ctx, worker, {
     delayMs,
-    lastWorkTs,
+    lastWorkTs: opts?.lastWorkTs,
+    cursor: opts?.cursor,
   });
 }
 
@@ -210,7 +212,11 @@ export async function goIdle(
 async function scheduleLoopRun(
   ctx: MutationCtx,
   worker: Doc<"workers">,
-  opts: { delayMs: number; lastWorkTs?: number | undefined },
+  opts: {
+    delayMs: number;
+    lastWorkTs?: number | undefined;
+    cursor?: Value | undefined;
+  },
 ): Promise<void> {
   const state = await getOrCreateWorkerState(ctx, worker);
   const generation = state.generation + 1n;
@@ -219,10 +225,13 @@ async function scheduleLoopRun(
     internal.loop.loop,
     { name: worker.name, generation },
   );
+  // The cursor rides along on the patch this already does every iteration, so
+  // persisting it costs no extra write. `undefined` means "leave it alone".
   await ctx.db.patch("workerState", state._id, {
     generation,
     runnerId,
     ...(opts.lastWorkTs !== undefined ? { lastWorkTs: opts.lastWorkTs } : {}),
+    ...(opts.cursor !== undefined ? { cursor: opts.cursor } : {}),
   });
 
   // await ctx.db.patch("workers", worker._id, { status: worker.status });
