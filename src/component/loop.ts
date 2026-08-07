@@ -82,7 +82,10 @@ export const loop = internalMutation({
       // batch or not at all. A cursor from the mutation wins over the query's:
       // it's the one that knows how far the work actually got.
       const cursor = ret?.cursor !== undefined ? ret.cursor : result.cursor;
-      await continueRunning(ctx, worker, debounceMs, { lastWorkTs: now, cursor });
+      await continueRunning(ctx, worker, debounceMs, {
+        lastWorkTs: now,
+        cursor,
+      });
       return;
     }
 
