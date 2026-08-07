@@ -1,10 +1,5 @@
 import { v } from "convex/values";
-import {
-  getCursor,
-  ping,
-  vBatchQueryArgs,
-  vBatchResult,
-} from "@convex-dev/batch-worker";
+import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -128,8 +123,9 @@ export const getTotals = query({
     const totals = await ctx.db.query("teamTotals").take(100);
     // Scores still queued, waiting to be folded into the aggregates. Reading
     // from the worker's cursor keeps this off the tombstones too.
-    const from =
-      (await getCursor(ctx, components.batchWorker, { name: WORKER })) ?? 0n;
+    const from = ((await ctx.runQuery(components.batchWorker.lib.cursor, {
+      name: WORKER,
+    })) ?? 0n) as bigint;
     const pending = (
       await ctx.db
         .query("scoreEvents")

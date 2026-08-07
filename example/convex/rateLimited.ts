@@ -1,11 +1,6 @@
 import { v } from "convex/values";
 import { SECOND, RateLimiter } from "@convex-dev/rate-limiter";
-import {
-  getCursor,
-  ping,
-  vBatchQueryArgs,
-  vBatchResult,
-} from "@convex-dev/batch-worker";
+import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalAction,
@@ -265,8 +260,9 @@ export const stats = query({
           .take(500)
       ).length;
     // The pending count reads from the worker's cursor, like the work query.
-    const from =
-      (await getCursor(ctx, components.batchWorker, { name: WORKER })) ?? 0n;
+    const from = ((await ctx.runQuery(components.batchWorker.lib.cursor, {
+      name: WORKER,
+    })) ?? 0n) as bigint;
     const pending = (
       await ctx.db
         .query("llmRequests")

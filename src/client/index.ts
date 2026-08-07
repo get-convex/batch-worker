@@ -5,7 +5,6 @@ import {
   type GenericActionCtx,
   type GenericDataModel,
   type GenericMutationCtx,
-  type GenericQueryCtx,
 } from "convex/server";
 import type { ComponentApi } from "../component/_generated/component.js";
 import {
@@ -100,46 +99,6 @@ export async function ping<
   });
 }
 
-/**
- * Read the cursor the worker last committed, or `null` if it has none yet.
- *
- * Useful when one of your own queries scans the same range the work query
- * does — counting pending work, say — so it starts past the same tombstones.
- *
- * @example
- * ```ts
- * const from = (await getCursor(ctx, components.batchWorker, { name })) ?? 0n;
- * const pending = await ctx.db
- *   .query("tasks")
- *   .withIndex("insertedAt", (q) => q.gte("insertedAt", from))
- *   .take(1000);
- * ```
- */
-export async function getCursor<Cursor = DefaultCursor>(
-  ctx: QueryCtx | MutationCtx | ActionCtx,
-  component: ComponentApi,
-  args: { name: string },
-): Promise<Cursor | null> {
-  return (await ctx.runQuery(component.lib.cursor, args)) as Cursor | null;
-}
-
-/**
- * Overwrite the worker's cursor, or clear it (omit `cursor`) so the next scan
- * starts from the front.
- *
- * For migrations and recovery — in the steady state, return a cursor from the
- * work query instead. The loop writes the same document every iteration, so
- * this is liable to conflict if the worker is busy.
- */
-export async function setCursor<Cursor = DefaultCursor>(
-  ctx: MutationCtx | ActionCtx,
-  component: ComponentApi,
-  args: { name: string; cursor?: Cursor | undefined },
-): Promise<void> {
-  await ctx.runMutation(component.lib.setCursor, args);
-}
-
-type QueryCtx = Pick<GenericQueryCtx<GenericDataModel>, "runQuery">;
 type MutationCtx = Pick<
   GenericMutationCtx<GenericDataModel>,
   "runQuery" | "runMutation"

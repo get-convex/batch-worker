@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { initConvexTest } from "./setup.test";
 import { api, components } from "./_generated/api";
-import { getCursor } from "@convex-dev/batch-worker";
 
 describe("e2e harness worker", () => {
   beforeEach(() => {
@@ -30,7 +29,7 @@ describe("e2e harness worker", () => {
 
     await t.mutation(api.e2e.reset, {});
     const cursor = await t.run((ctx) =>
-      getCursor(ctx, components.batchWorker, { name: "e2e" }),
+      ctx.runQuery(components.batchWorker.lib.cursor, { name: "e2e" }),
     );
     expect(cursor).toBeNull();
     expect(await t.query(api.e2e.samples, {})).toEqual([]);

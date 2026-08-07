@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { initConvexTest } from "./setup.test";
 import { api, components } from "./_generated/api";
-import { getCursor, setCursor } from "@convex-dev/batch-worker";
 
 describe("example worker", () => {
   beforeEach(() => {
@@ -108,7 +107,7 @@ describe("example worker", () => {
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const cursor = await t.run((ctx) =>
-      getCursor(ctx, components.batchWorker, { name: "events" }),
+      ctx.runQuery(components.batchWorker.lib.cursor, { name: "events" }),
     );
     expect(cursor).toBe(lastInsertedAt);
   });
@@ -134,7 +133,7 @@ describe("example worker", () => {
         .query("events")
         .withIndex("insertedAt")
         .collect();
-      await setCursor(ctx, components.batchWorker, {
+      await ctx.runMutation(components.batchWorker.lib.setCursor, {
         name: "events",
         cursor: (old.insertedAt as bigint) + 1n,
       });

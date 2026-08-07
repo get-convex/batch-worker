@@ -14,9 +14,7 @@ import {
 } from "convex/server";
 import {
   batchValidators,
-  getCursor,
   ping,
-  setCursor,
   vBatchQueryArgs,
   vBatchResult,
 } from "./index.js";
@@ -157,13 +155,13 @@ export const enqueueMark = mutationGeneric({
 export const markCursor = queryGeneric({
   args: {},
   handler: async (ctx) =>
-    getCursor(ctx, components.batchWorker, { name: CURSOR_WORKER }),
+    ctx.runQuery(components.batchWorker.lib.cursor, { name: CURSOR_WORKER }),
 });
 
 export const setMarkCursor = mutationGeneric({
   args: { cursor: v.optional(v.int64()) },
   handler: async (ctx, { cursor }) =>
-    setCursor(ctx, components.batchWorker, {
+    ctx.runMutation(components.batchWorker.lib.setCursor, {
       name: CURSOR_WORKER,
       cursor,
     }),
@@ -226,7 +224,7 @@ export const enqueueLetter = mutationGeneric({
 export const letterCursor = queryGeneric({
   args: {},
   handler: async (ctx) =>
-    getCursor<string>(ctx, components.batchWorker, { name: LETTER_WORKER }),
+    ctx.runQuery(components.batchWorker.lib.cursor, { name: LETTER_WORKER }),
 });
 
 export const letterBatches = queryGeneric({

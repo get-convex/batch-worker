@@ -1,11 +1,5 @@
 import { v } from "convex/values";
-import {
-  getCursor,
-  ping,
-  setCursor,
-  vBatchQueryArgs,
-  vBatchResult,
-} from "@convex-dev/batch-worker";
+import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -33,7 +27,9 @@ export const reset = mutation({
       for (const d of docs) await ctx.db.delete(table, d._id);
     }
     // Clear this worker's cursor too, so the next scenario starts from scratch.
-    await setCursor(ctx, components.batchWorker, { name: WORKER });
+    await ctx.runMutation(components.batchWorker.lib.setCursor, {
+      name: WORKER,
+    });
   },
 });
 
@@ -116,8 +112,9 @@ export const samples = query({
 export const pending = query({
   args: {},
   handler: async (ctx) => {
-    const from =
-      (await getCursor(ctx, components.batchWorker, { name: WORKER })) ?? 0n;
+    const from = ((await ctx.runQuery(components.batchWorker.lib.cursor, {
+      name: WORKER,
+    })) ?? 0n) as bigint;
     return (
       await ctx.db
         .query("e2eEvents")

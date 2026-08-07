@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { initConvexTest } from "./setup.test";
 import { api, components } from "./_generated/api";
-import { getCursor } from "@convex-dev/batch-worker";
 
 describe("serial aggregate updates", () => {
   beforeEach(() => {
@@ -97,7 +96,7 @@ describe("serial aggregate updates", () => {
       ctx.db.query("scoreEvents").withIndex("insertedAt").collect(),
     );
     const cursor = await t.run((ctx) =>
-      getCursor(ctx, components.batchWorker, { name: "aggregates" }),
+      ctx.runQuery(components.batchWorker.lib.cursor, { name: "aggregates" }),
     );
     expect(cursor).toBe(scores.at(-1)!.insertedAt);
   });
