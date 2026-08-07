@@ -13,7 +13,7 @@ import {
   queryGeneric,
 } from "convex/server";
 import {
-  batchValidators,
+  defineBatchWorkerValidators,
   ping,
   vBatchQueryArgs,
   vBatchResult,
@@ -175,7 +175,7 @@ export const batches = queryGeneric({
 
 // ── A worker whose cursor isn't a commit timestamp ──────────────────────────
 
-const letterValidators = batchValidators({
+const letterValidators = defineBatchWorkerValidators({
   batch: { letters: v.array(v.string()) },
   cursor: v.string(),
 });

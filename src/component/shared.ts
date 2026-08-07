@@ -80,13 +80,12 @@ export type DefaultCursor = Infer<typeof vDefaultCursor>;
 /**
  * The args your work query receives: the worker's `name` (so a single query
  * function can serve multiple named queues) and the `cursor` this worker last
- * committed, if any. Use this as your query's `args` validator for forward
- * compatibility.
+ * committed, if any.
  *
- * The cursor is whatever your query last returned alongside a batch that went
- * on to commit — see {@link vBatchResult}. It's absent until then. To use a
- * cursor type other than a commit timestamp, build your validators with
- * `batchValidators` instead.
+ * @deprecated Use {@link defineBatchWorkerValidators}, which derives this
+ * alongside the other three validators from one declaration — so the query and
+ * the mutation can't drift apart, and the cursor can be any type. This one is
+ * fixed to the default commit-timestamp cursor.
  */
 export const vBatchQueryArgs = v.object({
   name: v.string(),
@@ -98,9 +97,9 @@ export type BatchQueryArgs<Cursor = DefaultCursor> = {
 };
 
 /**
- * Builds the validator for what your work query returns: either a batch of
- * work to process, or an explicit `idle` (optionally with a `timeoutMs` hint
- * for when to check again — e.g. when the next item is scheduled).
+ * What your work query returns: either a batch of work to process, or an
+ * explicit `idle` (optionally with a `timeoutMs` hint for when to check again
+ * — e.g. when the next item is scheduled).
  *
  * Alongside a batch you may return a `cursor` saying how far this batch got.
  * The component commits it with the batch and hands it back as `args.cursor`
@@ -111,23 +110,16 @@ export type BatchQueryArgs<Cursor = DefaultCursor> = {
  * never run again until something pings it. If you scanned a stretch worth
  * skipping past but found nothing to do, return `work` with an empty batch and
  * the advanced cursor instead.
- *
- * @example
- * export const getBatch = internalQuery({
- *   args: vBatchQueryArgs,
- *   returns: vBatchResult(v.object({ ids: v.array(v.id("tasks")) })),
- *   handler: ...
- * });
  */
-export function vBatchResult<
+function vBatchResultFor<
   B extends Validator<any, "required", any> | PropertyValidators,
-  C extends Validator<any, "required", any> = VCommitTs,
->(batch: B, cursor?: C) {
+  C extends Validator<any, "required", any>,
+>(batch: B, cursor: C) {
   return v.union(
     v.object({
       kind: v.optional(v.literal("work")),
       batch: asObjectValidator(batch),
-      cursor: v.optional((cursor ?? vDefaultCursor) as C),
+      cursor: v.optional(cursor),
     }),
     v.object({
       kind: v.literal("idle"),
@@ -148,6 +140,21 @@ export function vBatchResult<
       timeoutMs: v.optional(v.number()),
     }),
   );
+}
+
+/**
+ * Builds the validator for what your work query returns — a batch (with an
+ * optional commit-timestamp `cursor`), or `idle`.
+ *
+ * @deprecated Use {@link defineBatchWorkerValidators}, which derives this
+ * alongside the other three validators from one declaration — so the query and
+ * the mutation can't drift apart, and the cursor can be any type. This one is
+ * fixed to the default commit-timestamp cursor.
+ */
+export function vBatchResult<
+  B extends Validator<any, "required", any> | PropertyValidators,
+>(batch: B) {
+  return vBatchResultFor(batch, vDefaultCursor);
 }
 
 /**
@@ -187,45 +194,59 @@ export type BatchResult<Batch, Cursor = DefaultCursor> =
  * What a worker mutation may return to steer the loop. Returning nothing (or
  * null) re-runs immediately (drain as fast as possible).
  */
-export const vWorkerResult = v.union(
-  v.null(),
-  v.object({
-    /**
-     * Don't run again — and ignore pings — for at least this long. Use to
-     * debounce / batch.
-     */
-    debounceMs: v.optional(v.number()),
-    /**
-     * Overrides the cursor the work query returned. Return one when the batch
-     * only made partial progress and you can derive how far you actually got
-     * (e.g. from a per-item timestamp carried in the batch), or
-     * `ctx.db.vars.commitTs` to mean "everything up to now" — the worker
-     * mutation shares the loop's transaction, so it resolves to the same
-     * timestamp this batch stamped on its own rows.
-     */
-    cursor: v.optional(vDefaultCursor),
-  }),
-);
+function vWorkerResultFor<C extends Validator<any, "required", any>>(
+  cursor: C,
+) {
+  return v.union(
+    v.null(),
+    v.object({
+      /**
+       * Don't run again — and ignore pings — for at least this long. Use to
+       * debounce / batch.
+       */
+      debounceMs: v.optional(v.number()),
+      /**
+       * Overrides the cursor the work query returned. Return one when the batch
+       * only made partial progress and you can derive how far you actually got
+       * (e.g. from a per-item timestamp carried in the batch), or
+       * `ctx.db.vars.commitTs` to mean "everything up to now" — the worker
+       * mutation shares the loop's transaction, so it resolves to the same
+       * timestamp this batch stamped on its own rows.
+       */
+      cursor: v.optional(cursor),
+    }),
+  );
+}
+
+/**
+ * What a worker mutation may return to steer the loop.
+ *
+ * @deprecated Use {@link defineBatchWorkerValidators}, which derives this
+ * alongside the other three validators from one declaration — so the query and
+ * the mutation can't drift apart, and the cursor can be any type. This one is
+ * fixed to the default commit-timestamp cursor.
+ */
+export const vWorkerResult = vWorkerResultFor(vDefaultCursor);
 export type WorkerResult<Cursor = DefaultCursor> = null | {
   debounceMs?: number;
   cursor?: Cursor;
 };
 
 /**
- * Builds all four validators for one worker from a single declaration, so the
- * query and the mutation can't drift apart.
+ * Builds all four of a worker's validators from a single declaration, so the
+ * query and the mutation can't drift apart — the batch shape is written once
+ * rather than repeated in the query's `returns` and the mutation's `args`, and
+ * the cursor type once rather than in three places.
  *
- * Use it when your cursor isn't a commit timestamp — `vBatchQueryArgs` and
- * `vBatchResult` only cover the default. It also pins the batch shape in one
- * place, rather than repeating it in the query's `returns` and the mutation's
- * `args`.
+ * `cursor` defaults to a commit timestamp ({@link vDefaultCursor}); pass one to
+ * key the worker on something else, like a `paginator` cursor.
  *
  * @example
  * ```ts
  * const { vQueryArgs, vQueryReturns, vMutationArgs, vMutationReturns } =
- *   batchValidators({
+ *   defineBatchWorkerValidators({
  *     batch: { ids: v.array(v.id("tasks")) },
- *     cursor: v.string(), // e.g. a `paginator` cursor
+ *     cursor: v.string(), // optional; defaults to v.commitTs()
  *   });
  *
  * export const getBatch = internalQuery({
@@ -241,7 +262,7 @@ export type WorkerResult<Cursor = DefaultCursor> = null | {
  * });
  * ```
  */
-export function batchValidators<
+export function defineBatchWorkerValidators<
   B extends Validator<any, "required", any> | PropertyValidators,
   C extends Validator<any, "required", any> = VCommitTs,
 >(spec: { batch: B; cursor?: C }) {
@@ -250,16 +271,10 @@ export function batchValidators<
     /** Your work query's `args`: `{ name, cursor? }`. */
     vQueryArgs: v.object({ name: v.string(), cursor: v.optional(cursor) }),
     /** Your work query's `returns`: a batch (with an optional cursor), or idle. */
-    vQueryReturns: vBatchResult(spec.batch, cursor),
+    vQueryReturns: vBatchResultFor(spec.batch, cursor),
     /** Your worker mutation's `args` — the batch the query returns. */
     vMutationArgs: asObjectValidator(spec.batch),
     /** Your worker mutation's `returns`: null, or `{ debounceMs?, cursor? }`. */
-    vMutationReturns: v.union(
-      v.null(),
-      v.object({
-        debounceMs: v.optional(v.number()),
-        cursor: v.optional(cursor),
-      }),
-    ),
+    vMutationReturns: vWorkerResultFor(cursor),
   };
 }
