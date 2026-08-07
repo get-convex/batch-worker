@@ -29,7 +29,7 @@ describe("e2e harness worker", () => {
 
     await t.mutation(api.e2e.reset, {});
     const cursor = await t.run((ctx) =>
-      ctx.runQuery(components.batchWorker.lib.cursor, { name: "e2e" }),
+      ctx.runQuery(components.batchWorker.lib.getCursor, { name: "e2e" }),
     );
     expect(cursor).toBeNull();
     expect(await t.query(api.e2e.samples, {})).toEqual([]);

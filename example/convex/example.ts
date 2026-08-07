@@ -104,7 +104,7 @@ export const getTotals = query({
       .unique();
     // Events left in the queue waiting for the worker to pick them up. Reading
     // from the worker's cursor keeps this off the tombstones too.
-    const from = ((await ctx.runQuery(components.batchWorker.lib.cursor, {
+    const from = ((await ctx.runQuery(components.batchWorker.lib.getCursor, {
       name: WORKER,
     })) ?? 0n) as bigint;
     const pending = (

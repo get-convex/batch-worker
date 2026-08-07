@@ -155,7 +155,7 @@ export const enqueueMark = mutationGeneric({
 export const markCursor = queryGeneric({
   args: {},
   handler: async (ctx) =>
-    ctx.runQuery(components.batchWorker.lib.cursor, { name: CURSOR_WORKER }),
+    ctx.runQuery(components.batchWorker.lib.getCursor, { name: CURSOR_WORKER }),
 });
 
 export const setMarkCursor = mutationGeneric({
@@ -224,7 +224,7 @@ export const enqueueLetter = mutationGeneric({
 export const letterCursor = queryGeneric({
   args: {},
   handler: async (ctx) =>
-    ctx.runQuery(components.batchWorker.lib.cursor, { name: LETTER_WORKER }),
+    ctx.runQuery(components.batchWorker.lib.getCursor, { name: LETTER_WORKER }),
 });
 
 export const letterBatches = queryGeneric({

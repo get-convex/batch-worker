@@ -112,7 +112,7 @@ export const samples = query({
 export const pending = query({
   args: {},
   handler: async (ctx) => {
-    const from = ((await ctx.runQuery(components.batchWorker.lib.cursor, {
+    const from = ((await ctx.runQuery(components.batchWorker.lib.getCursor, {
       name: WORKER,
     })) ?? 0n) as bigint;
     return (

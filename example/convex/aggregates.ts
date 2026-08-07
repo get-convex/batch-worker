@@ -123,7 +123,7 @@ export const getTotals = query({
     const totals = await ctx.db.query("teamTotals").take(100);
     // Scores still queued, waiting to be folded into the aggregates. Reading
     // from the worker's cursor keeps this off the tombstones too.
-    const from = ((await ctx.runQuery(components.batchWorker.lib.cursor, {
+    const from = ((await ctx.runQuery(components.batchWorker.lib.getCursor, {
       name: WORKER,
     })) ?? 0n) as bigint;
     const pending = (

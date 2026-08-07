@@ -53,7 +53,7 @@ export const status = query({
  * Read it when your own queries want to scan the same range the worker does
  * (e.g. counting work still pending), so they skip the same tombstones.
  */
-export const cursor = query({
+export const getCursor = query({
   args: { name: v.string() },
   returns: v.any(),
   handler: async (ctx, args) => {

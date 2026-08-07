@@ -24,7 +24,7 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     lib: {
-      cursor: FunctionReference<
+      getCursor: FunctionReference<
         "query",
         "internal",
         { name: string },

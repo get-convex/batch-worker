@@ -260,7 +260,7 @@ export const stats = query({
           .take(500)
       ).length;
     // The pending count reads from the worker's cursor, like the work query.
-    const from = ((await ctx.runQuery(components.batchWorker.lib.cursor, {
+    const from = ((await ctx.runQuery(components.batchWorker.lib.getCursor, {
       name: WORKER,
     })) ?? 0n) as bigint;
     const pending = (

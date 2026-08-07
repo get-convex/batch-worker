@@ -107,7 +107,7 @@ describe("example worker", () => {
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const cursor = await t.run((ctx) =>
-      ctx.runQuery(components.batchWorker.lib.cursor, { name: "events" }),
+      ctx.runQuery(components.batchWorker.lib.getCursor, { name: "events" }),
     );
     expect(cursor).toBe(lastInsertedAt);
   });

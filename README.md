@@ -305,7 +305,7 @@ one of your own queries wants to scan the same range — counting pending work,
 say — read it off the component, like `status`:
 
 ```ts
-const from = ((await ctx.runQuery(components.batchWorker.lib.cursor, {
+const from = ((await ctx.runQuery(components.batchWorker.lib.getCursor, {
   name: "events",
 })) ?? 0n) as bigint;
 ```
