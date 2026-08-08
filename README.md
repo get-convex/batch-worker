@@ -58,8 +58,8 @@ component too: call `component.use(batchWorker)` in your component's
 
 Insert work into your own table, then call `ping`. Provide a query that returns
 the next batch or `idle`, and a mutation that processes it.
-`defineBatchWorkerValidators` declares the batch shape once and hands you all
-four validators, so the two halves can't drift apart. (`kind: "work"` is
+To ensure that the batch shape always matches between the query and the mutation, 
+use `defineBatchWorkerValidators` to obtain all four argument and return validators. (`kind: "work"` is
 optional — returning `{ batch }` alone also works.)
 
 Alongside the batch, the query returns a **cursor** saying how far it got. The
@@ -80,7 +80,7 @@ export const addEvent = mutation({
   args: { value: v.number() },
   handler: async (ctx, { value }) => {
     // `db.vars.commitTs` resolves at commit to an int64 ordered by commit
-    // order — that's what makes it safe to cursor on. See below.
+    // order — that's what makes it safe to use as a cursor. See below.
     await ctx.db.insert("events", { value, insertedAt: ctx.db.vars.commitTs });
     await ping(ctx, components.batchWorker, {
       name: "events", // distinct names give you independent queues

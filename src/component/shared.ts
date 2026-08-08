@@ -69,10 +69,6 @@ export type Status = Infer<typeof vStatus>;
 /**
  * The default cursor type: a commit timestamp, as written by
  * `ctx.db.vars.commitTs` and read back as a `bigint`.
- *
- * Typing it as `v.commitTs()` rather than `v.int64()` means a row's timestamp
- * field can be handed straight back as the cursor without a cast, since that's
- * exactly the type such a field has.
  */
 export const vDefaultCursor = v.commitTs();
 export type DefaultCursor = Infer<typeof vDefaultCursor>;
