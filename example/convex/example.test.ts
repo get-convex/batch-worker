@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { initConvexTest } from "./setup.test";
-import { api } from "./_generated/api";
+import { api, components } from "./_generated/api";
 
 describe("example worker", () => {
   beforeEach(() => {
@@ -107,16 +107,18 @@ describe("example worker", () => {
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const cursor = await t.run((ctx) =>
-      ctx.db
-        .query("cursors")
-        .withIndex("name", (q) => q.eq("name", "events"))
-        .unique(),
+      ctx.runQuery(components.batchWorker.lib.getCursor, { name: "events" }),
     );
-    expect(cursor?.commitTs).toBe(lastInsertedAt);
+    expect(cursor).toBe(lastInsertedAt);
   });
 
   test("leaves events behind the cursor alone", async () => {
     const t = initConvexTest();
+    // The cursor lives on the worker, so it has to exist before we can park it.
+    await t.mutation(api.example.addEvent, { value: 1 });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    // Insert an event without pinging, so the loop doesn't pick it up.
     await t.run(async (ctx) => {
       await ctx.db.insert("events", {
         value: 100,
@@ -131,9 +133,9 @@ describe("example worker", () => {
         .query("events")
         .withIndex("insertedAt")
         .collect();
-      await ctx.db.insert("cursors", {
+      await ctx.runMutation(components.batchWorker.lib.setCursor, {
         name: "events",
-        commitTs: (old.insertedAt as bigint) + 1n,
+        cursor: (old.insertedAt as bigint) + 1n,
       });
     });
 
@@ -142,8 +144,8 @@ describe("example worker", () => {
 
     // Only the new event was summed — the scan really does start at the cursor.
     expect(await t.query(api.example.getTotals, {})).toEqual({
-      total: 5,
-      count: 1,
+      total: 6,
+      count: 2,
       pending: 0,
     });
     const left = await t.run((ctx) => ctx.db.query("events").collect());

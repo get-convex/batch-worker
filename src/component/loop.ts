@@ -49,11 +49,15 @@ export const loop = internalMutation({
     }
 
     const now = Date.now();
-    const queryArgs: BatchQueryArgs = { name };
+    // The cursor is sent once a batch has returned one.
+    const queryArgs: BatchQueryArgs<Value> = {
+      name,
+      ...(state.cursor !== undefined ? { cursor: state.cursor } : {}),
+    };
     const queryRef = worker.workQuery as unknown as FunctionHandle<
       "query",
-      BatchQueryArgs,
-      BatchResult<Value>
+      BatchQueryArgs<Value>,
+      BatchResult<Value, Value>
     >;
 
     // Stale snapshot read: no OCC dependency, so concurrent inserts while we
@@ -69,11 +73,18 @@ export const loop = internalMutation({
       const mutationRef = worker.workerMutation as unknown as FunctionHandle<
         "mutation",
         any,
-        WorkerResult
+        WorkerResult<Value>
       >;
       const ret = await ctx.runMutation(mutationRef, result.batch);
       const debounceMs = ret?.debounceMs ?? 0;
-      await continueRunning(ctx, worker, debounceMs, now);
+      // The mutation shares this transaction, so the cursor commits with the
+      // batch. A cursor from the mutation wins over the query's: it knows how
+      // far the work actually got.
+      const cursor = ret?.cursor !== undefined ? ret.cursor : result.cursor;
+      await continueRunning(ctx, worker, debounceMs, {
+        lastWorkTs: now,
+        cursor,
+      });
       return;
     }
 
@@ -118,8 +129,12 @@ export const loop = internalMutation({
 /** A real (dependency-taking) read of the work query. */
 async function confirmHasWork(
   ctx: MutationCtx,
-  queryRef: FunctionHandle<"query", BatchQueryArgs, BatchResult<Value>>,
-  queryArgs: BatchQueryArgs,
+  queryRef: FunctionHandle<
+    "query",
+    BatchQueryArgs<Value>,
+    BatchResult<Value, Value>
+  >,
+  queryArgs: BatchQueryArgs<Value>,
 ): Promise<boolean> {
   const confirm = await ctx.runQuery(queryRef, queryArgs);
   // Match the snapshot path's detection: a result with a `batch` is work.

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { initConvexTest } from "./setup.test";
-import { api } from "./_generated/api";
+import { api, components } from "./_generated/api";
 
 describe("serial aggregate updates", () => {
   beforeEach(() => {
@@ -92,13 +92,14 @@ describe("serial aggregate updates", () => {
     await t.mutation(api.aggregates.recordScore, { team: "red", points: 2 });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    const [scores, cursor] = await t.run(async (ctx) => [
-      await ctx.db.query("scoreEvents").withIndex("insertedAt").collect(),
-      await ctx.db
-        .query("cursors")
-        .withIndex("name", (q) => q.eq("name", "aggregates"))
-        .unique(),
-    ]);
-    expect(cursor?.commitTs).toBe(scores.at(-1)!.insertedAt);
+    const scores = await t.run((ctx) =>
+      ctx.db.query("scoreEvents").withIndex("insertedAt").collect(),
+    );
+    const cursor = await t.run((ctx) =>
+      ctx.runQuery(components.batchWorker.lib.getCursor, {
+        name: "aggregates",
+      }),
+    );
+    expect(cursor).toBe(scores.at(-1)!.insertedAt);
   });
 });

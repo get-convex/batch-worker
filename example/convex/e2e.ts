@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
+import { defineBatchWorkerValidators, ping } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalMutation,
@@ -7,7 +7,6 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
-import { advanceCursor, cursorFor, resetCursor } from "./cursor.js";
 
 // Instrumented worker used by e2e.mjs to measure performance. Kept separate
 // from the README example (different worker `name`) so it doesn't interfere.
@@ -27,8 +26,10 @@ export const reset = mutation({
       const docs = await ctx.db.query(table).collect();
       for (const d of docs) await ctx.db.delete(table, d._id);
     }
-    // Reset this worker's cursor too, so the next scenario starts from scratch.
-    await resetCursor(ctx, WORKER);
+    // Clear this worker's cursor too, so the next scenario starts from scratch.
+    await ctx.runMutation(components.batchWorker.lib.setCursor, {
+      name: WORKER,
+    });
   },
 });
 
@@ -50,23 +51,24 @@ export const enqueue = mutation({
   },
 });
 
-export const getBatch = internalQuery({
-  args: vBatchQueryArgs,
-  returns: vBatchResult(
-    v.object({
+const { vQueryArgs, vQueryReturns, vMutationArgs } =
+  defineBatchWorkerValidators({
+    batch: {
       items: v.array(
         v.object({ id: v.id("e2eEvents"), creationTime: v.number() }),
       ),
-      cursor: v.int64(),
-    }),
-  ),
-  handler: async (ctx, { name }) => {
+    },
+  });
+
+export const getBatch = internalQuery({
+  args: vQueryArgs,
+  returns: vQueryReturns,
+  handler: async (ctx, { cursor }) => {
     // Resume from the cursor so batch reads stay a fixed size no matter how
     // many rows (and tombstones) the harness has already churned through.
-    const from = await cursorFor(ctx, name);
     const events = await ctx.db
       .query("e2eEvents")
-      .withIndex("updatedAt", (q) => q.gte("updatedAt", from))
+      .withIndex("updatedAt", (q) => q.gte("updatedAt", cursor ?? 0n))
       .take(BATCH_SIZE);
     if (events.length === 0) {
       return { kind: "idle" as const };
@@ -78,20 +80,15 @@ export const getBatch = internalQuery({
           id: e._id,
           creationTime: e._creationTime,
         })),
-        cursor: events.at(-1)!.updatedAt as bigint,
       },
+      cursor: events.at(-1)!.updatedAt,
     };
   },
 });
 
 export const processBatch = internalMutation({
-  args: {
-    items: v.array(
-      v.object({ id: v.id("e2eEvents"), creationTime: v.number() }),
-    ),
-    cursor: v.int64(),
-  },
-  handler: async (ctx, { items, cursor }) => {
+  args: vMutationArgs,
+  handler: async (ctx, { items }) => {
     const now = Date.now();
     const latencies = items.map((b) => now - b.creationTime);
     await ctx.db.insert("e2eSamples", {
@@ -103,7 +100,6 @@ export const processBatch = internalMutation({
     for (const b of items) {
       await ctx.db.delete("e2eEvents", b.id);
     }
-    await advanceCursor(ctx, WORKER, cursor);
   },
 });
 
@@ -115,7 +111,9 @@ export const samples = query({
 export const pending = query({
   args: {},
   handler: async (ctx) => {
-    const from = await cursorFor(ctx, WORKER);
+    const from = ((await ctx.runQuery(components.batchWorker.lib.getCursor, {
+      name: WORKER,
+    })) ?? 0n) as bigint;
     return (
       await ctx.db
         .query("e2eEvents")

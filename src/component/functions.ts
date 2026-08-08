@@ -25,7 +25,10 @@ const withLogger = customCtx(() => ({ log: createLogger(env.LOG_LEVEL) }));
 export const query = customQuery(baseQuery, withLogger);
 export const internalQuery = customQuery(baseInternalQuery, withLogger);
 export const mutation = customMutation(baseMutation, withLogger);
-export const internalMutation = customMutation(baseInternalMutation, withLogger);
+export const internalMutation = customMutation(
+  baseInternalMutation,
+  withLogger,
+);
 
 /**
  * Ctx types for this component's functions: the generated ctx augmented with

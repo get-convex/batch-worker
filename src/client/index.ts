@@ -11,14 +11,19 @@ import {
   type BatchQueryArgs,
   type BatchResult,
   type Config,
+  type DefaultCursor,
+  type WorkerResult,
 } from "../component/shared.js";
 
 export {
+  defineBatchWorkerValidators,
   vBatchQueryArgs,
   vBatchResult,
+  vDefaultCursor,
   vWorkerResult,
   type BatchResult,
   type BatchQueryArgs,
+  type DefaultCursor,
   type WorkerResult,
 } from "../component/shared.js";
 export type {
@@ -32,10 +37,13 @@ export type {
  * already running).
  *
  * You provide:
- *  - a **work query** (args validated by {@link vBatchQueryArgs}, returns
- *    {@link vBatchResult}) that returns the next batch or `idle`, and
+ *  - a **work query** that returns the next batch or `idle`, and
  *  - a **worker mutation** that processes a batch and owns its cleanup. It may
  *    return `{ debounceMs }` to throttle the loop.
+ *
+ * Validate both with {@link defineBatchWorkerValidators}. The cursor type is
+ * taken from the work query's `cursor` arg, and both return types are checked
+ * against it.
  *
  * @example
  * ```ts
@@ -52,7 +60,10 @@ export type {
  * });
  * ```
  */
-export async function ping<Batch extends DefaultFunctionArgs>(
+export async function ping<
+  Batch extends DefaultFunctionArgs,
+  Cursor = DefaultCursor,
+>(
   ctx: MutationCtx | ActionCtx,
   component: ComponentApi,
   args: {
@@ -62,15 +73,15 @@ export async function ping<Batch extends DefaultFunctionArgs>(
     workQuery: FunctionReference<
       "query",
       "internal",
-      BatchQueryArgs,
-      BatchResult<Batch>
+      BatchQueryArgs<Cursor>,
+      BatchResult<Batch, NoInfer<Cursor>>
     >;
     /** Processes a batch returned by the work query. */
     workerMutation: FunctionReference<
       "mutation",
       "internal",
       Batch,
-      { debounceMs?: number } | null | void
+      WorkerResult<NoInfer<Cursor>> | void
     >;
     /** Loop configuration. */
     config?: Partial<Config>;

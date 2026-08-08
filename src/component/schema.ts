@@ -34,5 +34,10 @@ export default defineSchema({
     // `monitorLagMs` after the loop's next run and refreshed as it approaches.
     monitorId: v.optional(v.id("_scheduled_functions")),
     monitorRunAtMs: v.optional(v.number()),
+    // How far the work query said it got, passed back to it as `args.cursor`.
+    // Opaque here: it's whatever the app's query or worker mutation returned,
+    // so the app's own validators type it. Written on the same patch that
+    // schedules the next run. Absent until a batch returns one.
+    cursor: v.optional(v.any()),
   }),
 });
