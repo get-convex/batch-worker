@@ -225,8 +225,8 @@ async function scheduleLoopRun(
     internal.loop.loop,
     { name: worker.name, generation },
   );
-  // The cursor rides along on the patch this already does every iteration, so
-  // persisting it costs no extra write. `undefined` means "leave it alone".
+  // The cursor rides along on the patch this already does every iteration.
+  // `undefined` leaves the stored cursor as it was.
   await ctx.db.patch("workerState", state._id, {
     generation,
     runnerId,

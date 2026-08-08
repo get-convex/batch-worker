@@ -37,13 +37,13 @@ export type {
  * already running).
  *
  * You provide:
- *  - a **work query** (args validated by {@link vBatchQueryArgs}, returns
- *    {@link vBatchResult}) that returns the next batch or `idle`, and
+ *  - a **work query** that returns the next batch or `idle`, and
  *  - a **worker mutation** that processes a batch and owns its cleanup. It may
  *    return `{ debounceMs }` to throttle the loop.
  *
- * The cursor type is taken from the work query's `cursor` arg, so that's the
- * one place to declare it; the return types are checked against it.
+ * Validate both with {@link defineBatchWorkerValidators}. The cursor type is
+ * taken from the work query's `cursor` arg, and both return types are checked
+ * against it.
  *
  * @example
  * ```ts

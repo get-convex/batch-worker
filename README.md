@@ -57,10 +57,10 @@ component too: call `component.use(batchWorker)` in your component's
 ## Usage
 
 Insert work into your own table, then call `ping`. Provide a query that returns
-the next batch or `idle`, and a mutation that processes it.
-To ensure that the batch shape always matches between the query and the mutation, 
-use `defineBatchWorkerValidators` to obtain all four argument and return validators. (`kind: "work"` is
-optional — returning `{ batch }` alone also works.)
+the next batch or `idle`, and a mutation that processes it. To ensure that the
+batch shape always matches between the query and the mutation, use
+`defineBatchWorkerValidators` to obtain all four argument and return validators.
+(`kind: "work"` is optional — returning `{ batch }` alone also works.)
 
 Alongside the batch, the query returns a **cursor** saying how far it got. The
 component commits it with the batch and hands it back as `args.cursor` next
@@ -92,8 +92,8 @@ export const addEvent = mutation({
 
 const vEvents = v.array(v.object({ id: v.id("events"), value: v.number() }));
 
-// One declaration → the query's args (`{ name, cursor? }`) and returns, plus
-// the mutation's args. `cursor` defaults to a commit timestamp.
+// One declaration gives the query's args (`{ name, cursor? }`) and returns,
+// plus the mutation's args. `cursor` defaults to a commit timestamp.
 const { vQueryArgs, vQueryReturns, vMutationArgs } =
   defineBatchWorkerValidators({ batch: { events: vEvents } });
 
@@ -102,7 +102,7 @@ export const getBatch = internalQuery({
   args: vQueryArgs, // `name` lets one query serve many queues
   returns: vQueryReturns,
   handler: async (ctx, { cursor }) => {
-    // Resume where the last batch stopped instead of rescanning from the front.
+    // Resume where the last batch stopped.
     const events = await ctx.db
       .query("events")
       .withIndex("insertedAt", (q) => q.gte("insertedAt", cursor ?? 0n))
@@ -169,8 +169,8 @@ return {
 
 ### Steering the loop dynamically
 
-Your worker mutation may return `{ debounceMs }` to throttle the loop (and a
-`cursor` to override the query's — see [The cursor](#the-cursor)):
+Your worker mutation may return `{ debounceMs }` to throttle the loop, and a
+`cursor` to override the query's (see [The cursor](#the-cursor)):
 
 ```ts
 return {
@@ -260,19 +260,19 @@ Do **not** use `_creationTime`. It's assigned when a mutation _starts_, so a row
 inserted by a slow mutation can land _behind_ rows the worker has already
 queried past.
 
-**Use `gte`, not `gt`.** Everything a single mutation inserts shares one commit
-timestamp, and a batch can end in the middle of such a tie — `gt` would skip the
-rest of it. Re-reading from the tie costs at most one mutation's worth of
-already-processed rows.
+**Scan with `gte`.** Everything a single mutation inserts shares one commit
+timestamp, so a batch can end in the middle of such a tie and the next scan has
+to start at the tie to pick up the rest. Re-reading from the tie costs at most
+one mutation's worth of already-processed rows.
 
-An alternative is to read the remaining documents at that same commit timestamp
-into the batch so it ends on a boundary, which also ensures work added "at once"
-is processed together — if you can be sure that fits in one transaction. See
+To end each batch on a tie boundary instead, read the remaining documents at
+that commit timestamp into the batch and scan with `gt`. That also processes
+work added "at once" together, as long as it fits in one transaction. See
 [the aggregate example](./example/convex/aggregates.ts).
 
 #### Other cursor types
 
-The cursor can be any Convex value — for instance a `paginator` cursor from
+The cursor can be any Convex value, for instance a `paginator` cursor from
 `convex-helpers`, which captures the index range
 `[commitTs, _creationTime, _id]` so you know exactly where you left off. Pass
 `cursor` to `defineBatchWorkerValidators` and all four validators pick it up:
@@ -285,36 +285,28 @@ const { vQueryArgs, vQueryReturns, vMutationArgs, vMutationReturns } =
   });
 ```
 
-`ping` takes the cursor's type from the work query's `cursor` arg and checks the
-two return positions against it, so a mismatch points at one place.
-
-> The older `vBatchQueryArgs`, `vBatchResult` and `vWorkerResult` are
-> deprecated. They still work, but each is fixed to the commit-timestamp cursor
-> and they're declared separately enough that the query and mutation can drift
-> apart.
+`ping` takes the cursor's type from the work query's `cursor` arg and checks
+both return types against it, so a mismatch points at one place.
 
 #### Adjusting the cursor from the worker mutation
 
-The worker mutation can return a `cursor` that overrides the query's — use it
-when the batch only made partial progress and you can work out how far it
-actually got, e.g. from a per-item timestamp carried in the batch:
+The worker mutation can return a `cursor` that overrides the query's. Use it
+when the batch made partial progress and you can work out how far it got, e.g.
+from a per-item timestamp carried in the batch:
 
 ```ts
 return { cursor: lastProcessed.updatedAt };
 ```
 
-You can also return `ctx.db.vars.commitTs` to mean "everything up to now": the
-worker mutation shares the loop's transaction, so it resolves to the same
-timestamp this batch stamped on its own rows.
-
-If a batch can't be processed at all, throw — that rolls back the transaction,
-so the cursor doesn't move and the monitor retries the batch.
+If it is not returned, it will defer to the cursor returned by the work query,
+if one was returned, or keep the old value. Note: if the cursor does not advance
+and you did not update anything the query read, you may end up in an infinite
+loop.
 
 #### Reading and resetting the cursor
 
-Normally the work query gets the cursor in its args and that's all you need. If
-one of your own queries wants to scan the same range — counting pending work,
-say — read it off the component, like `status`:
+The work query receives the cursor in its args. To read it elsewhere, say from a
+query counting pending work, call the component like `status`:
 
 ```ts
 const from = ((await ctx.runQuery(components.batchWorker.lib.getCursor, {
@@ -323,8 +315,8 @@ const from = ((await ctx.runQuery(components.batchWorker.lib.getCursor, {
 ```
 
 `lib.setCursor` overwrites it, and clears it when `cursor` is omitted, so the
-next scan starts from the front. It's for migrations and recovery — the loop
-writes that document every iteration, so calling it while the worker is busy is
+next scan starts from the front. Use it for migrations and recovery: the loop
+writes that document every iteration, so a call made while the worker is busy is
 liable to conflict. It throws if the worker doesn't exist yet (`ping` creates
 it).
 
@@ -428,12 +420,12 @@ Tips for rate-limiting LLM calls:
 ### Failure handling
 
 If your work query or worker mutation throws, the loop dies and the liveness
-monitor restarts it after ~`monitorLagMs` — and since the unprocessed rows are
-still in your table and the cursor didn't move, the query will hand out the
-**same batch again**. That gives you at-least-once processing, but it also means
-one poison item that always throws can wedge the queue. For work that can fail
-per item, catch errors inside the worker mutation, and isolate bad docs in a
-table for async debugging.
+monitor restarts it after ~`monitorLagMs`. The unprocessed rows are still in
+your table and the cursor stayed where it was, so the query hands out the **same
+batch again**. That gives you at-least-once processing, but it also means one
+poison item that always throws can wedge the queue. For work that can fail per
+item, catch errors inside the worker mutation, and isolate bad docs in a table
+for async debugging.
 
 This is a low-level primitive, relative to components like Workpool or Workflow,
 so you have to handle exceptional cases yourself.
@@ -529,7 +521,7 @@ published to `https://<deployment>.convex.site`. See
 | `workerState` | `loop` (every iteration)            | `loop`, monitor         |
 
 The high-churn loop state lives in `workerState` (generation, heartbeat, the
-scheduled runner, the monitor, and the cursor — which rides along on a patch the
+scheduled runner, the monitor, and the cursor, which rides along on a patch the
 loop already does every iteration), separate from the rarely-written `workers`
 doc (which holds the handles, config, and run-status: `idle` / `running` /
 `stopped`, plus a pointer to its `workerState`). That lets `ping`/`start` —

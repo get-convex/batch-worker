@@ -23,7 +23,7 @@ export const addEvent = mutation({
   handler: async (ctx, { value }) => {
     // `db.vars.commitTs` resolves to this mutation's commit timestamp. Every row
     // a mutation writes shares one value, and nothing can commit later with a
-    // smaller one — that's what makes it safe to cursor on.
+    // smaller one, which is what makes it safe to use as a cursor.
     await ctx.db.insert("events", { value, insertedAt: ctx.db.vars.commitTs });
     await ping(ctx, components.batchWorker, {
       name: WORKER,
@@ -33,14 +33,9 @@ export const addEvent = mutation({
   },
 });
 
-/**
- * One declaration of the batch shape gives the query's args and returns, and
- * the mutation's args — so the two halves can't drift apart. The cursor
- * defaults to a commit timestamp.
- */
 const vEvent = v.object({ id: v.id("events"), value: v.number() });
 
-const { vQueryArgs, vQueryReturns, vMutationArgs } =
+const { vQueryArgs, vQueryReturns, vMutationArgs, vMutationReturns } =
   defineBatchWorkerValidators({ batch: { events: v.array(vEvent) } });
 
 /**
@@ -51,10 +46,10 @@ export const getBatch = internalQuery({
   args: vQueryArgs,
   returns: vQueryReturns,
   handler: async (ctx, { cursor }) => {
-    // Pick up where the last batch stopped, rather than from the front of the
-    // table — where every row we've already deleted leaves a tombstone to scan
-    // over. `gte` because the cursor is inclusive: everything one mutation
-    // inserts shares a commit timestamp, and a batch can end mid-tie.
+    // Pick up where the last batch stopped, skipping the tombstone every row
+    // we deleted left at the front of the table. `gte` because the cursor is
+    // inclusive: everything one mutation inserts shares a commit timestamp,
+    // and a batch can end mid-tie.
     const events = await ctx.db
       .query("events")
       .withIndex("insertedAt", (q) => q.gte("insertedAt", cursor ?? 0n))
@@ -73,12 +68,13 @@ export const getBatch = internalQuery({
 });
 
 /**
- * The worker mutation: processes a batch. It owns cleanup — deleting the rows
- * it processed so the table stays small. The cursor isn't its problem.
- * Returning nothing re-runs immediately to drain the rest.
+ * The worker mutation: processes a batch. It owns cleanup, deleting the rows it
+ * processed so the table stays small. Returning nothing re-runs immediately to
+ * drain the rest.
  */
 export const processBatch = internalMutation({
   args: vMutationArgs,
+  returns: vMutationReturns,
   handler: async (ctx, { events }) => {
     const sum = events.reduce((a, e) => a + e.value, 0);
     const totals = await ctx.db

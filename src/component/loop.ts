@@ -49,8 +49,7 @@ export const loop = internalMutation({
     }
 
     const now = Date.now();
-    // The cursor is only sent once a batch has returned one, so a worker whose
-    // query doesn't declare the arg never sees it.
+    // The cursor is sent once a batch has returned one.
     const queryArgs: BatchQueryArgs<Value> = {
       name,
       ...(state.cursor !== undefined ? { cursor: state.cursor } : {}),
@@ -79,8 +78,8 @@ export const loop = internalMutation({
       const ret = await ctx.runMutation(mutationRef, result.batch);
       const debounceMs = ret?.debounceMs ?? 0;
       // The mutation shares this transaction, so the cursor commits with the
-      // batch or not at all. A cursor from the mutation wins over the query's:
-      // it's the one that knows how far the work actually got.
+      // batch. A cursor from the mutation wins over the query's: it knows how
+      // far the work actually got.
       const cursor = ret?.cursor !== undefined ? ret.cursor : result.cursor;
       await continueRunning(ctx, worker, debounceMs, {
         lastWorkTs: now,

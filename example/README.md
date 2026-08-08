@@ -10,8 +10,8 @@ defines three named workers and the Vite UI ([`src/`](./src)) drives each one:
   collect requests and spend a token budget on async calls.
 
 All three drain their queue by returning a `v.commitTs()` cursor from the work
-query — the component commits it with the batch and hands it back on the next
-call — rather than rescanning the front of the table each batch.
+query. The component commits it with the batch and hands it back on the next
+call, so each scan resumes where the last one stopped.
 
 Run all commands from the **root of the repo**.
 

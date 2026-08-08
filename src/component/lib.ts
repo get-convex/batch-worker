@@ -65,16 +65,14 @@ export const getCursor = query({
 });
 
 /**
- * Overwrite the worker's cursor — omit `cursor` to clear it, so the next scan
- * starts from the front again. For migrations and recovery, not the steady
- * state: the loop writes this document every iteration, so calling this while
- * the worker is busy is liable to hit a write conflict. Prefer returning a
- * cursor from the work query or worker mutation.
+ * Overwrite the worker's cursor. Omit `cursor` to clear it, so the next scan
+ * starts from the front again.
  *
- * Throws if the worker doesn't exist yet — the cursor lives on the worker, so
- * there'd be nowhere to put it and the call would silently do nothing. `ping`
- * creates the worker; `stop` it first if you need to seed a cursor before it
- * processes anything.
+ * Use this for migrations and recovery; in the steady state return a cursor
+ * from the work query. The loop writes this document every iteration, so a
+ * call made while the worker is busy is liable to hit a write conflict.
+ *
+ * Note: a worker must have been `ping`ed before the cursor can be set.
  */
 export const setCursor = mutation({
   args: { name: v.string(), cursor: v.optional(v.any()) },
@@ -83,7 +81,7 @@ export const setCursor = mutation({
     const worker = await getWorker(ctx, args.name);
     if (!worker) {
       throw new Error(
-        `[setCursor] no worker named "${args.name}" — ping it first`,
+        `[setCursor] no worker named "${args.name}". Ping it first.`,
       );
     }
     const state = await getOrCreateWorkerState(ctx, worker);

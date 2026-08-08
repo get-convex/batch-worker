@@ -173,6 +173,36 @@ export const batches = queryGeneric({
     (await ctx.db.query("batches").take(1000)).map((b) => b.seqs),
 });
 
+// Seeding a cursor before the worker gets to process anything: `ping` creates
+// the worker, `stop` in the same mutation keeps its loop from running.
+export const seedMarks = mutationGeneric({
+  args: { seqs: v.array(v.int64()), cursor: v.int64() },
+  handler: async (ctx, { seqs, cursor }) => {
+    for (const seq of seqs) {
+      await ctx.db.insert("marks", { seq });
+    }
+    await ping(ctx, components.batchWorker, {
+      name: CURSOR_WORKER,
+      config: { debounceMs: 0 },
+      workQuery: testApi.getMarks,
+      workerMutation: testApi.processMarks,
+    });
+    await ctx.runMutation(components.batchWorker.lib.stop, {
+      name: CURSOR_WORKER,
+    });
+    await ctx.runMutation(components.batchWorker.lib.setCursor, {
+      name: CURSOR_WORKER,
+      cursor,
+    });
+  },
+});
+
+export const startMarks = mutationGeneric({
+  args: {},
+  handler: async (ctx) =>
+    ctx.runMutation(components.batchWorker.lib.start, { name: CURSOR_WORKER }),
+});
+
 // ── A worker whose cursor isn't a commit timestamp ──────────────────────────
 
 const letterValidators = defineBatchWorkerValidators({
@@ -250,6 +280,8 @@ const testApi = (
       markCursor: typeof markCursor;
       setMarkCursor: typeof setMarkCursor;
       batches: typeof batches;
+      seedMarks: typeof seedMarks;
+      startMarks: typeof startMarks;
       getLetters: typeof getLetters;
       processLetters: typeof processLetters;
       enqueueLetter: typeof enqueueLetter;
@@ -306,8 +338,8 @@ describe("Cursor", () => {
     for (const seq of [0n, 1n, 2n, 3n]) {
       await t.mutation(testApi.enqueueMark, { seq });
     }
-    // Nothing deletes the marks, so draining at all means the cursor came back
-    // as `args.cursor` — otherwise the query keeps handing out the same batch.
+    // Nothing deletes the marks, so the query only stops handing out the same
+    // batch once the cursor comes back to it as `args.cursor`.
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     expect(await t.query(testApi.batches, {})).toEqual([
@@ -341,6 +373,23 @@ describe("Cursor", () => {
 
     await t.mutation(testApi.setMarkCursor, {});
     expect(await t.query(testApi.markCursor, {})).toBe(null);
+  });
+
+  test("can be seeded before the worker processes anything", async () => {
+    const t = initConvexTest(schema);
+    await t.mutation(testApi.seedMarks, { seqs: [0n, 1n, 2n, 3n], cursor: 2n });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await t.query(testApi.batches, {})).toEqual([]);
+
+    // A ping doesn't resume a stopped worker, so the cursor stays seeded.
+    await t.mutation(testApi.enqueueMark, { seq: 4n });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await t.query(testApi.batches, {})).toEqual([]);
+
+    // `start` is what resumes it, and the scan begins at the seeded cursor.
+    await t.mutation(testApi.startMarks, {});
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await t.query(testApi.batches, {})).toEqual([[2n, 3n], [4n]]);
   });
 
   test("can be a type other than a commit timestamp", async () => {
