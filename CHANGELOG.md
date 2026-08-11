@@ -1,10 +1,13 @@
 # Changelog
 
-## 0.2.1-alpha.0
+## 0.3.0
 
 - Provide a worker-persisted cursor to make it easier to implement iterating
   through work using commitTs, which optimizes your queries to skip slow regions
-  of the database full of deleted items. Requires Convex 1.43+ for v.commitTs()
+  of the database full of deleted items.
+- Introduces `defineBatchWorkerValidators`, deprecates vBatchQueryArgs,
+  vBatchResult, etc.
+- Requires Convex 1.43+ for v.commitTs() and the new `ctx.runQuery` options.
 
 ## 0.2.0
 
