@@ -27,7 +27,9 @@ import { RUNNING_THRESHOLD_MS } from "./shared.js";
 // `functions.ts`); convex-test's raw ctx has none, so add one here. Defaults to
 // a silent mock logger; pass one in to assert logging side-effects.
 const run = <T>(
-  t: { run: <O>(fn: (ctx: Omit<MutationCtx, "log">) => Promise<O>) => Promise<O> },
+  t: {
+    run: <O>(fn: (ctx: Omit<MutationCtx, "log">) => Promise<O>) => Promise<O>;
+  },
   fn: (ctx: MutationCtx) => Promise<T>,
   log: Logger = createMockLogger(),
 ): Promise<T> => t.run((ctx) => fn(Object.assign(ctx, { log })));

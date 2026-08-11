@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { SECOND, RateLimiter } from "@convex-dev/rate-limiter";
-import { ping, vBatchQueryArgs, vBatchResult } from "@convex-dev/batch-worker";
+import { defineBatchWorkerValidators, ping } from "@convex-dev/batch-worker";
 import { components, internal } from "./_generated/api.js";
 import {
   internalAction,
@@ -9,7 +9,6 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
-import { advanceCursor, cursorFor } from "./cursor.js";
 
 // Batching async LLM requests, paced by a token budget.
 //
@@ -62,7 +61,7 @@ export const submitRequest = mutation({
       inputTokens,
       state: "pending",
       // Lets the worker cursor through pending requests in commit order rather
-      // than rescanning from the front of the range. See cursor.ts.
+      // than rescanning from the front of the range.
       updatedAt: ctx.db.vars.commitTs,
     });
     await ping(ctx, components.batchWorker, worker);
@@ -77,15 +76,13 @@ const vLlmRequest = v.object({
   inputTokens: v.number(),
 });
 
-const vBatch = v.object({
-  requests: v.array(vLlmRequest),
-  cursor: v.int64(),
-});
+const { vQueryArgs, vQueryReturns, vMutationArgs, vMutationReturns } =
+  defineBatchWorkerValidators({ batch: { requests: v.array(vLlmRequest) } });
 
 export const getBatch = internalQuery({
-  args: vBatchQueryArgs,
-  returns: vBatchResult(vBatch),
-  handler: async (ctx, { name }) => {
+  args: vQueryArgs,
+  returns: vQueryReturns,
+  handler: async (ctx, { cursor }) => {
     // TODO: also pick up "started" requests whose action never reported back
     // (e.g. `startedAt` older than some timeout) so a crashed batch isn't
     // stranded. That scan walks the (small) "started" range, so it doesn't use
@@ -94,11 +91,10 @@ export const getBatch = internalQuery({
     // Nothing is deleted here — requests are patched from "pending" to
     // "started" — but patching a row out of the pending range leaves a
     // tombstone there just the same, so the cursor still earns its keep.
-    const from = await cursorFor(ctx, name);
     const pending = await ctx.db
       .query("llmRequests")
       .withIndex("state_updatedAt", (q) =>
-        q.eq("state", "pending").gte("updatedAt", from),
+        q.eq("state", "pending").gte("updatedAt", cursor ?? 0n),
       )
       .take(BATCH_SIZE);
     if (pending.length === 0) {
@@ -112,9 +108,9 @@ export const getBatch = internalQuery({
           prompt: r.prompt,
           inputTokens: r.inputTokens,
         })),
-        // Rows come back in commit order, so the last one is how far we got.
-        cursor: pending.at(-1)!.updatedAt as bigint,
       },
+      // Rows come back in commit order, so the last one is how far we got.
+      cursor: pending.at(-1)!.updatedAt,
     };
   },
 });
@@ -124,8 +120,9 @@ export const getBatch = internalQuery({
  * started, and schedule the LLM call for when the budget clears.
  */
 export const startBatch = internalMutation({
-  args: vBatch,
-  handler: async (ctx, { requests, cursor }) => {
+  args: vMutationArgs,
+  returns: vMutationReturns,
+  handler: async (ctx, { requests }) => {
     const totalInputTokens = requests.reduce((a, r) => a + r.inputTokens, 0);
 
     // Reserve the whole batch's input tokens up front. `reserve: true` never
@@ -148,7 +145,6 @@ export const startBatch = internalMutation({
         updatedAt: ctx.db.vars.commitTs,
       });
     }
-    await advanceCursor(ctx, WORKER, cursor);
 
     // Make the actual call when the reservation clears. Pass the prompts
     // through so the action doesn't have to re-read them.
@@ -263,8 +259,10 @@ export const stats = query({
           .withIndex("state_updatedAt", (q) => q.eq("state", state))
           .take(500)
       ).length;
-    // The pending count reads from the cursor, like the work query does.
-    const from = await cursorFor(ctx, WORKER);
+    // The pending count reads from the worker's cursor, like the work query.
+    const from = ((await ctx.runQuery(components.batchWorker.lib.getCursor, {
+      name: WORKER,
+    })) ?? 0n) as bigint;
     const pending = (
       await ctx.db
         .query("llmRequests")
