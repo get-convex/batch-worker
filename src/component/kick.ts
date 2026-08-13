@@ -85,8 +85,23 @@ export async function ping(
     }
     await ctx.db.replace("workers", worker._id, worker);
   }
-  if (worker.status.kind !== "idle") {
+  if (worker.status.kind === "stopped") {
     ctx.log.debug(`[ping] "${worker.name}" ${worker.status.kind} — no-op`);
+    return;
+  }
+  if (worker.status.kind === "running") {
+    if (worker.monitorRunAtMs != null && worker.monitorRunAtMs > Date.now()) {
+      ctx.log.debug(`[ping] "${worker.name}" running — no-op`);
+      return;
+    }
+
+    const restarted = await repairRunningWorker(ctx, worker);
+    if (restarted) {
+      ctx.log.error(`[ping] "${worker.name}" loop is not running — restarting`);
+      ctx.log.event("restart", { name: worker.name, source: "ping" });
+    } else {
+      ctx.log.debug(`[ping] "${worker.name}" monitor deadline repaired`);
+    }
     return;
   }
   await wake(ctx, worker);
@@ -157,6 +172,28 @@ async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
   const delayMs = worker.config.debounceMs ?? DEFAULT_CONFIG.debounceMs;
   await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
   await scheduleLoopRun(ctx, worker, { delayMs });
+}
+
+/**
+ * Check a running worker after its cached monitor deadline expires. A pending
+ * loop is healthy, so only re-arm its monitor. Otherwise start a new loop.
+ * Returns whether the loop was restarted.
+ */
+export async function repairRunningWorker(
+  ctx: MutationCtx,
+  worker: Doc<"workers">,
+): Promise<boolean> {
+  const state = await getOrCreateWorkerState(ctx, worker);
+  const loop =
+    state.runnerId &&
+    (await ctx.db.system.get("_scheduled_functions", state.runnerId));
+  if (loop?.state.kind === "pending") {
+    await ensureMonitored(ctx, worker, loop.scheduledTime);
+    return false;
+  }
+
+  await continueRunning(ctx, worker, 0);
+  return true;
 }
 
 // ── Scheduling the loop ────────────────────────────────────────────────────
@@ -264,7 +301,16 @@ export async function ensureMonitored(
   const gracePeriod = Math.min(lag / 2, MONITOR_REFRESH_WITHIN_MS);
   const close =
     state.monitorRunAtMs == null || state.monitorRunAtMs <= now + gracePeriod;
-  if (state.monitorId && !close) return;
+  if (state.monitorId && !close) {
+    // Backfill or repair the low-churn deadline used by ping without touching
+    // the runner generation or replacing a healthy scheduled function.
+    if (worker.monitorRunAtMs !== state.monitorRunAtMs) {
+      await ctx.db.patch("workers", worker._id, {
+        monitorRunAtMs: state.monitorRunAtMs,
+      });
+    }
+    return;
+  }
 
   if (state.monitorId) await cancelIfPending(ctx, state.monitorId);
   const desiredAt = loopRunAtMs + lag;
@@ -277,6 +323,7 @@ export async function ensureMonitored(
     monitorId,
     monitorRunAtMs: desiredAt,
   });
+  await ctx.db.patch("workers", worker._id, { monitorRunAtMs: desiredAt });
 }
 
 export async function cancelMonitor(
