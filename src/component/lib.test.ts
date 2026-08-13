@@ -66,6 +66,7 @@ describe("worker component", () => {
       const state = await getOrCreateWorkerState(ctx, worker);
       expect(state.monitorId).toBeDefined();
       expect(state.monitorRunAtMs).toBeDefined();
+      expect(worker.monitorRunAtMs).toBe(state.monitorRunAtMs);
       expect(state.generation).toBe(1n);
       expect(state.runnerId).toBeDefined();
     });
@@ -96,6 +97,55 @@ describe("worker component", () => {
     );
     expect(after!.generation).toBe(before!.generation);
     expect(after!.runnerId).toBe(before!.runnerId);
+  });
+
+  test("ping restarts a running worker after its monitor expires", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.lib.ping, pingArgs());
+    const before = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+    assert(before.runnerId);
+    assert(before.monitorId);
+    assert(before.monitorRunAtMs);
+    await run(t, async (ctx) => {
+      await ctx.scheduler.cancel(before.runnerId!);
+      await ctx.scheduler.cancel(before.monitorId!);
+    });
+    vi.setSystemTime(new Date(before.monitorRunAtMs + 1));
+
+    await t.mutation(api.lib.ping, pingArgs());
+
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
+    assert(worker);
+    const after = await run(t, (ctx) => getOrCreateWorkerState(ctx, worker));
+    expect(after.generation > before.generation).toBe(true);
+    expect(after.runnerId).not.toBe(before.runnerId);
+    expect(after.monitorId).not.toBe(before.monitorId);
+    expect(worker.monitorRunAtMs).toBeGreaterThan(Date.now());
+  });
+
+  test("ping backfills a missing monitor deadline without restarting", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.lib.ping, pingArgs());
+    const before = await run(t, async (ctx) => {
+      const worker = await getWorker(ctx, "");
+      assert(worker);
+      const state = await getOrCreateWorkerState(ctx, worker);
+      await ctx.db.patch("workers", worker._id, {
+        monitorRunAtMs: undefined,
+      });
+      return state;
+    });
+
+    await t.mutation(api.lib.ping, pingArgs());
+
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
+    assert(worker);
+    const after = await run(t, (ctx) => getOrCreateWorkerState(ctx, worker));
+    expect(after.generation).toBe(before.generation);
+    expect(after.runnerId).toBe(before.runnerId);
+    expect(worker.monitorRunAtMs).toBe(after.monitorRunAtMs);
   });
 
   test("status reflects the run state", async () => {
@@ -133,6 +183,24 @@ describe("worker component", () => {
     // ping (gen 1) → stop (bumps to 2, invalidating the canceled runner) →
     // start (bumps to 3).
     expect(state!.generation).toBe(3n);
+  });
+
+  test("ping does not resume a stopped worker", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.lib.ping, pingArgs());
+    await t.mutation(api.lib.stop, { name: "" });
+    const before = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+
+    await t.mutation(api.lib.ping, pingArgs());
+
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
+    assert(worker);
+    const after = await run(t, (ctx) => getOrCreateWorkerState(ctx, worker));
+    expect(worker.status.kind).toBe("stopped");
+    expect(after.generation).toBe(before.generation);
+    expect(after.runnerId).toBeUndefined();
   });
 
   test("start is a no-op for an unknown worker", async () => {

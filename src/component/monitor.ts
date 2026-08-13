@@ -2,10 +2,9 @@ import { v } from "convex/values";
 import { internalMutation } from "./functions.js";
 import {
   cancelMonitor,
-  continueRunning,
-  ensureMonitored,
   getOrCreateWorkerState,
   getWorker,
+  repairRunningWorker,
 } from "./kick.js";
 
 /**
@@ -32,18 +31,9 @@ export const monitor = internalMutation({
       return;
     }
 
-    const loop =
-      state?.runnerId &&
-      (await ctx.db.system.get("_scheduled_functions", state?.runnerId));
-    if (loop?.state.kind !== "pending") {
+    if (await repairRunningWorker(ctx, worker)) {
       ctx.log.error(`[monitor] "${name}" loop is not running — restarting`);
       ctx.log.event("restart", { name });
-      await continueRunning(ctx, worker, 0);
-      return;
     }
-
-    // Loop is alive (scheduled or running) but we fired anyway — re-arm behind
-    // its next run so we keep trailing it.
-    await ensureMonitored(ctx, worker, loop.scheduledTime);
   },
 });

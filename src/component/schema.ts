@@ -15,6 +15,10 @@ export default defineSchema({
     config: vConfig.partial(),
     status: vStatus,
     stateId: v.id("workerState"),
+    // Cached from workerState when the monitor is scheduled. `ping` uses this
+    // low-churn deadline to detect when both the loop and monitor may be stale
+    // without reading the hot workerState document on every insert.
+    monitorRunAtMs: v.optional(v.number()),
   }).index("name", ["name"]),
 
   // One row per named worker, owned and written by `loop` on every iteration
