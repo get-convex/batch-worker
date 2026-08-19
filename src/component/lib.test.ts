@@ -15,6 +15,7 @@ import schema from "./schema.js";
 import { modules } from "./setup.test.js";
 import type { MutationCtx } from "./functions.js";
 import {
+  ensureMonitored,
   getWorker,
   getOrCreateWorkerState,
   scheduleWaiting,
@@ -249,6 +250,99 @@ describe("worker component", () => {
     expect(worker.status.kind).toBe("stopped");
     const state = await run(t, (ctx) => getOrCreateWorkerState(ctx, worker));
     expect(state!.monitorId).toBeUndefined();
+  });
+
+  // A loop run the scheduler keeps retrying after system failures stays
+  // "pending" at its original scheduledTime. The tests below simulate that
+  // wedged state by moving the clock past the runner without executing it.
+  describe("runner stuck pending in the past", () => {
+    test("monitor recovers it instead of re-arming behind it", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(api.lib.ping, pingArgs());
+      const before = await run(t, async (ctx) =>
+        getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+      );
+      vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+
+      await t.mutation(internal.monitor.monitor, { name: "" });
+
+      const after = await run(t, async (ctx) =>
+        getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+      );
+      expect(after!.generation > before!.generation).toBe(true);
+      expect(after!.runnerId).not.toBe(before!.runnerId);
+      // The stuck runner must be canceled, which is what stops the scheduler
+      // from retrying it.
+      const old = await run(t, (ctx) =>
+        ctx.db.system.get("_scheduled_functions", before!.runnerId!),
+      );
+      expect(old?.state.kind).toBe("canceled");
+      // And the monitor must be re-armed in the future; scheduled in the past
+      // it would fire again immediately, forever.
+      expect(after!.monitorRunAtMs).toBeGreaterThan(Date.now());
+    });
+
+    test("ensureMonitored never schedules the monitor in the past", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(api.lib.ping, pingArgs());
+      const staleLoopRunAt = Date.now();
+      vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+      await run(t, async (ctx) => {
+        const worker = await getWorker(ctx, "");
+        assert(worker);
+        await ensureMonitored(ctx, worker, staleLoopRunAt);
+      });
+      const state = await run(t, async (ctx) =>
+        getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+      );
+      expect(state!.monitorRunAtMs).toBeGreaterThan(Date.now());
+    });
+
+    test("monitor recovers it while the worker is waiting", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(api.lib.ping, pingArgs());
+      // Waiting state: runner pending 5s out, status idle. The monitor is the
+      // only recovery path here since pings no-op on an imminent runner.
+      await run(t, async (ctx) => {
+        const w = await getWorker(ctx, "");
+        assert(w);
+        await scheduleWaiting(ctx, w, 5000);
+      });
+      const before = await run(t, async (ctx) =>
+        getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+      );
+      vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+
+      await t.mutation(internal.monitor.monitor, { name: "" });
+
+      const after = await run(t, async (ctx) =>
+        getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+      );
+      const worker = await run(t, (ctx) => getWorker(ctx, ""));
+      expect(worker!.status.kind).toBe("running");
+      expect(after!.generation > before!.generation).toBe(true);
+      expect(after!.runnerId).not.toBe(before!.runnerId);
+      const old = await run(t, (ctx) =>
+        ctx.db.system.get("_scheduled_functions", before!.runnerId!),
+      );
+      expect(old?.state.kind).toBe("canceled");
+    });
+
+    test("monitor leaves an on-time pending runner alone", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(api.lib.ping, pingArgs());
+      const before = await run(t, async (ctx) =>
+        getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+      );
+
+      await t.mutation(internal.monitor.monitor, { name: "" });
+
+      const after = await run(t, async (ctx) =>
+        getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+      );
+      expect(after!.generation).toBe(before!.generation);
+      expect(after!.runnerId).toBe(before!.runnerId);
+    });
   });
 
   test("independent named workers don't interfere", async () => {
