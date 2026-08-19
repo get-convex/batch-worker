@@ -15,6 +15,9 @@ export const MONITOR_LAG_MS = 60 * SECOND;
 // Refresh the monitor when it would otherwise fire within this window — keeps
 // it trailing the loop without rescheduling on every iteration.
 export const MONITOR_REFRESH_WITHIN_MS = 10 * SECOND;
+// How far past its scheduledTime a pending loop run may be before it's
+// presumed stuck rather than delayed by scheduler backlog.
+export const STUCK_RUNNER_GRACE_MS = 60 * SECOND;
 
 /**
  * Configuration for a worker's main loop.
