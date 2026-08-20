@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1-alpha.0
+
+- More graceful handling of monitor execution and backoff for wedged workers.
+
 ## 0.3.0
 
 - Provide a worker-persisted cursor to make it easier to implement iterating

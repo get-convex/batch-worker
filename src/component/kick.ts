@@ -267,7 +267,9 @@ export async function ensureMonitored(
   if (state.monitorId && !close) return;
 
   if (state.monitorId) await cancelIfPending(ctx, state.monitorId);
-  const desiredAt = loopRunAtMs + lag;
+  // Clamp to the future in case loopRunAtMs is stale (e.g. a stuck runner's
+  // scheduledTime).
+  const desiredAt = Math.max(loopRunAtMs, now) + lag;
   const monitorId = await ctx.scheduler.runAt(
     desiredAt,
     internal.monitor.monitor,
