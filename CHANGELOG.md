@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1-alpha.0
+
+- Improve monitor polling behavior around wedged workers.
+
 ## 0.2.0
 
 - Removes the heartbeat field (breaking)
