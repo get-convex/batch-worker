@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1-alpha.1
+## 0.2.1
 
 - Improve monitor polling behavior around wedged workers.
 
