@@ -1,8 +1,9 @@
 # Changelog
 
-## 0.3.1-alpha.0
+## 0.3.1
 
 - More graceful handling of monitor execution and backoff for wedged workers.
+- Cancels and re-schedules a worker if it's "pending" for over a minute.
 
 ## 0.3.0
 
