@@ -3,6 +3,7 @@ import { mutation, query } from "./functions.js";
 import {
   getOrCreateWorkerState,
   getWorker,
+  kick as kickHelper,
   ping as pingHelper,
   start as startHelper,
   stop as stopHelper,
@@ -37,6 +38,17 @@ export const stop = mutation({
   args: { name: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => stopHelper(ctx, args.name),
+});
+
+/**
+ * Manual recovery: cancel whatever is scheduled and start a fresh loop run and
+ * monitor, from any status (including stopped). Use when the worker is wedged,
+ * e.g. after its scheduled functions were canceled from the dashboard.
+ */
+export const kick = mutation({
+  args: { name: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => kickHelper(ctx, args.name),
 });
 
 export const status = query({

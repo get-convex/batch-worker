@@ -345,6 +345,38 @@ describe("worker component", () => {
     });
   });
 
+  test("kick recovers a worker whose scheduled functions were canceled", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.lib.ping, pingArgs());
+    const before = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+    // Cancel both out from under the worker, as the dashboard's cancel-all
+    // does. Status stays "running", so pings no-op and the monitor that would
+    // recover the loop no longer exists.
+    await run(t, async (ctx) => {
+      await ctx.scheduler.cancel(before!.runnerId!);
+      await ctx.scheduler.cancel(before!.monitorId!);
+    });
+    await t.mutation(api.lib.ping, pingArgs());
+    const wedged = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+    expect(wedged!.runnerId).toBe(before!.runnerId);
+
+    await t.mutation(api.lib.kick, { name: "" });
+
+    const after = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
+    expect(worker!.status.kind).toBe("running");
+    expect(after!.generation > before!.generation).toBe(true);
+    expect(after!.runnerId).not.toBe(before!.runnerId);
+    expect(after!.monitorId).not.toBe(before!.monitorId);
+    expect(after!.monitorRunAtMs).toBeGreaterThan(Date.now());
+  });
+
   test("independent named workers don't interfere", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs({ name: "a" }));
