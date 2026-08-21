@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2
+
+- Fix: Prefer a sooner timeoutMs over a ping's debounceMs when idle.
+- Adds a lib:kick function to run if you ever get into a degenerate situation
+  where the worker and monitor are both dead (e.g. you cancel all scheduled
+  functions from the dashboard for this component)
+
 ## 0.3.1
 
 - More graceful handling of monitor execution and backoff for wedged workers.
