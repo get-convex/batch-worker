@@ -108,6 +108,24 @@ export async function start(ctx: MutationCtx, name: string): Promise<void> {
 }
 
 /**
+ * Manual recovery: cancel whatever is scheduled and start a fresh loop run
+ * and monitor, from any status (including stopped). Use when the worker is
+ * wedged, e.g. after its scheduled functions were canceled from the dashboard
+ * or the monitor itself died, leaving status "running" so pings no-op.
+ */
+export async function kick(ctx: MutationCtx, name: string): Promise<void> {
+  const worker = await getWorker(ctx, name);
+  if (!worker) return;
+  const state = await getOrCreateWorkerState(ctx, worker);
+  if (state.runnerId) await cancelIfPending(ctx, state.runnerId);
+  // Clear the monitor state so scheduleLoopRun arms a fresh monitor even if
+  // monitorRunAtMs still looks healthy.
+  await cancelMonitor(ctx, state);
+  await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
+  await scheduleLoopRun(ctx, worker, { delayMs: 0 });
+}
+
+/**
  * Stop the worker: cancel its loop and monitor and mark it idle.
  * Only `start` will resume it.
  */
