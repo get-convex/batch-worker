@@ -219,6 +219,30 @@ describe("worker component", () => {
     expect(after!.runnerId).toBe(before!.runnerId);
   });
 
+  test("ping is a no-op when the loop is scheduled within the debounce window", async () => {
+    const t = convexTest(schema, modules);
+    const config = { debounceMs: 20 * RUNNING_THRESHOLD_MS };
+    await t.mutation(api.lib.ping, pingArgs({ config }));
+    // Sleep beyond RUNNING_THRESHOLD_MS but sooner than a debounced reschedule
+    // would run — canceling it would only delay the work.
+    await run(t, async (ctx) => {
+      const w = await getWorker(ctx, "");
+      assert(w);
+      await scheduleWaiting(ctx, w, 10 * RUNNING_THRESHOLD_MS);
+    });
+    const before = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+
+    await t.mutation(api.lib.ping, pingArgs({ config }));
+
+    const after = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+    expect(after!.generation).toBe(before!.generation);
+    expect(after!.runnerId).toBe(before!.runnerId);
+  });
+
   test("monitor restarts a dead loop and keeps watching", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
