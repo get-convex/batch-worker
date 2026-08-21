@@ -55,10 +55,10 @@ export const DEFAULT_CONFIG: Config = {
  * (and the occasional monitor refresh), so `ping`/`start` can read it on every
  * insert without OCC-conflicting with the fast-looping loop.
  *
- * - `idle`: no loop scheduled. `ping`/`start` must start it.
- * - `running`: the loop is executing or scheduled to run imminently
- *   (≤ RUNNING_THRESHOLD_MS). A ping is a no-op — work is picked up soon.
- * - `waiting`: the loop is sleeping until `runAtMs`.
+ * - `idle`: nothing guarantees new work gets picked up: no loop is scheduled,
+ *   or it's sleeping on an idle timeout. `ping` must wake it.
+ * - `running`: the loop is executing or scheduled to run within the debounce
+ *   window. A ping is a no-op — work is picked up soon.
  */
 export const vStatus = v.union(
   v.object({ kind: v.literal("idle") }),

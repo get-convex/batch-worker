@@ -147,9 +147,10 @@ export async function stop(ctx: MutationCtx, name: string): Promise<void> {
 // ── Waking the loop ────────────────────────────────────────────────────────
 
 /**
- * Decide whether a ping/start should do anything:
- * - idle    → start a fresh loop (unless there's one scheduled for soon)
- * - running → no-op (work will be picked up imminently).
+ * Wake a worker on ping/start: mark it running and make sure a loop run is
+ * scheduled within the debounce window. If one already is, keep it (canceling
+ * would only delay work); otherwise cancel and reschedule for `now +
+ * debounceMs`.
  */
 async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
   const state = (await ctx.db.get("workerState", worker.stateId)) ?? {
@@ -162,6 +163,7 @@ async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
     (await ctx.db.system.get("_scheduled_functions", state.runnerId));
   // Possibly wait for a debounce window before running
   const delayMs = worker.config.debounceMs ?? DEFAULT_CONFIG.debounceMs;
+  await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
   // Rescheduling would run at `now + delayMs`; if the pending run is already
   // sooner than that (or imminent), canceling it would only delay work.
   if (
@@ -169,13 +171,12 @@ async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
     loop.scheduledTime < now + Math.max(delayMs, RUNNING_THRESHOLD_MS)
   ) {
     ctx.log.debug(
-      `[wake] "${worker.name}" already scheduled to run sooner — no-op`,
+      `[wake] "${worker.name}" already scheduled to run sooner — keeping it`,
     );
     return;
   }
   ctx.log.debug(`[wake] "${worker.name}" interrupting wait`);
   if (loop) await cancelIfPending(ctx, loop._id);
-  await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
   await scheduleLoopRun(ctx, worker, { delayMs, lastWorkTs: now + delayMs });
 }
 

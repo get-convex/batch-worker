@@ -264,7 +264,7 @@ describe("worker component", () => {
     expect(after!.runnerId).toBe(before!.runnerId);
   });
 
-  test("ping is a no-op when the loop is scheduled within the debounce window", async () => {
+  test("ping keeps a loop scheduled within the debounce window but marks it running", async () => {
     const t = convexTest(schema, modules);
     const config = { debounceMs: 20 * RUNNING_THRESHOLD_MS };
     await t.mutation(api.lib.ping, pingArgs({ config }));
@@ -286,6 +286,15 @@ describe("worker component", () => {
     );
     expect(after!.generation).toBe(before!.generation);
     expect(after!.runnerId).toBe(before!.runnerId);
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
+    expect(worker!.status.kind).toBe("running");
+
+    // Later pings now no-op on the status check alone.
+    await t.mutation(api.lib.ping, pingArgs({ config }));
+    const stateAfter = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+    expect(stateAfter!.runnerId).toBe(before!.runnerId);
   });
 
   test("monitor restarts a dead loop and keeps watching", async () => {
