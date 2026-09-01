@@ -153,10 +153,7 @@ export async function stop(ctx: MutationCtx, name: string): Promise<void> {
  * debounceMs`.
  */
 async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
-  const state = (await ctx.db.get("workerState", worker.stateId)) ?? {
-    runnerId: undefined,
-    lastWorkTs: 0,
-  };
+  const state = await getOrCreateWorkerState(ctx, worker);
   const now = Date.now();
   const loop =
     state.runnerId &&
@@ -173,6 +170,10 @@ async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
     ctx.log.debug(
       `[wake] "${worker.name}" already scheduled to run sooner — keeping it`,
     );
+    // The kept run gets a fresh cooldown window too.
+    await ctx.db.patch("workerState", state._id, {
+      lastWorkTs: Math.max(state.lastWorkTs, loop.scheduledTime),
+    });
     return;
   }
   ctx.log.debug(`[wake] "${worker.name}" interrupting wait`);

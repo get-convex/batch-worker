@@ -288,6 +288,8 @@ describe("worker component", () => {
     expect(after!.runnerId).toBe(before!.runnerId);
     const worker = await run(t, (ctx) => getWorker(ctx, ""));
     expect(worker!.status.kind).toBe("running");
+    // The kept run gets a fresh cooldown window from its scheduled time.
+    expect(after!.lastWorkTs).toBe(Date.now() + 10 * RUNNING_THRESHOLD_MS);
 
     // Later pings now no-op on the status check alone.
     await t.mutation(api.lib.ping, pingArgs({ config }));
