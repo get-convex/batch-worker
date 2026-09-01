@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2-alpha.0
+
+- Enfoce a cooldown period whenever the worker starts running, even if the query
+  hasn't returned work for a while.
+
 ## 0.2.1
 
 - Improve monitor polling behavior around wedged workers.
