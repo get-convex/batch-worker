@@ -176,7 +176,7 @@ async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
   ctx.log.debug(`[wake] "${worker.name}" interrupting wait`);
   if (loop) await cancelIfPending(ctx, loop._id);
   await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
-  await scheduleLoopRun(ctx, worker, { delayMs });
+  await scheduleLoopRun(ctx, worker, { delayMs, lastWorkTs: now + delayMs });
 }
 
 // ── Scheduling the loop ────────────────────────────────────────────────────
@@ -188,12 +188,15 @@ export async function continueRunning(
   delayMs: number,
   opts?: { lastWorkTs?: number | undefined; cursor?: Value | undefined },
 ): Promise<void> {
+  let lastWorkTs = opts?.lastWorkTs;
   if (worker.status.kind !== "running") {
     await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
+    // Entering running starts a fresh cooldown window.
+    lastWorkTs = Math.max(lastWorkTs ?? 0, Date.now() + delayMs);
   }
   await scheduleLoopRun(ctx, worker, {
     delayMs,
-    lastWorkTs: opts?.lastWorkTs,
+    lastWorkTs,
     cursor: opts?.cursor,
   });
 }

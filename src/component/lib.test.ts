@@ -15,6 +15,7 @@ import schema from "./schema.js";
 import { modules } from "./setup.test.js";
 import type { MutationCtx } from "./functions.js";
 import {
+  continueRunning,
   ensureMonitored,
   getWorker,
   getOrCreateWorkerState,
@@ -194,6 +195,50 @@ describe("worker component", () => {
     expect(workerAfter!.status.kind).toBe("running");
     expect(after!.generation > before!.generation).toBe(true);
     expect(after!.runnerId).not.toBe(before!.runnerId);
+  });
+
+  test("waking from a wait refreshes the cooldown window", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.lib.ping, pingArgs());
+    await run(t, async (ctx) => {
+      const w = await getWorker(ctx, "");
+      assert(w);
+      await scheduleWaiting(ctx, w, 60_000);
+    });
+    vi.advanceTimersByTime(10_000);
+
+    await t.mutation(api.lib.ping, pingArgs());
+
+    // The woken run gets a full cooldown window, so a pool with no runnable
+    // work (e.g. saturated) can't bounce straight back to idle on every ping.
+    const state = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+    expect(state!.lastWorkTs).toBe(Date.now());
+  });
+
+  test("continueRunning from idle refreshes the cooldown window", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.lib.ping, pingArgs());
+    await run(t, async (ctx) => {
+      const w = await getWorker(ctx, "");
+      assert(w);
+      await scheduleWaiting(ctx, w, 60_000);
+    });
+    vi.advanceTimersByTime(60_000);
+
+    await run(t, async (ctx) => {
+      const w = await getWorker(ctx, "");
+      assert(w);
+      await continueRunning(ctx, w, 0);
+    });
+
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
+    expect(worker!.status.kind).toBe("running");
+    const state = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, worker!),
+    );
+    expect(state!.lastWorkTs).toBe(Date.now());
   });
 
   test("ping is a no-op when the loop will run soon", async () => {
