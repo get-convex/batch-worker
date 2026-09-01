@@ -147,21 +147,20 @@ export async function stop(ctx: MutationCtx, name: string): Promise<void> {
 // ── Waking the loop ────────────────────────────────────────────────────────
 
 /**
- * Decide whether a ping/start should do anything:
- * - idle    → start a fresh loop (unless there's one scheduled for soon)
- * - running → no-op (work will be picked up imminently).
+ * Wake a worker on ping/start: mark it running and make sure a loop run is
+ * scheduled within the debounce window. If one already is, keep it (canceling
+ * would only delay work); otherwise cancel and reschedule for `now +
+ * debounceMs`.
  */
 async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
-  const state = (await ctx.db.get("workerState", worker.stateId)) ?? {
-    runnerId: undefined,
-    lastWorkTs: 0,
-  };
+  const state = await getOrCreateWorkerState(ctx, worker);
   const now = Date.now();
   const loop =
     state.runnerId &&
     (await ctx.db.system.get("_scheduled_functions", state.runnerId));
   // Possibly wait for a debounce window before running
   const delayMs = worker.config.debounceMs ?? DEFAULT_CONFIG.debounceMs;
+  await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
   // Rescheduling would run at `now + delayMs`; if the pending run is already
   // sooner than that (or imminent), canceling it would only delay work.
   if (
@@ -169,14 +168,17 @@ async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
     loop.scheduledTime < now + Math.max(delayMs, RUNNING_THRESHOLD_MS)
   ) {
     ctx.log.debug(
-      `[wake] "${worker.name}" already scheduled to run sooner — no-op`,
+      `[wake] "${worker.name}" already scheduled to run sooner — keeping it`,
     );
+    // The kept run gets a fresh cooldown window too.
+    await ctx.db.patch("workerState", state._id, {
+      lastWorkTs: Math.max(state.lastWorkTs, loop.scheduledTime),
+    });
     return;
   }
   ctx.log.debug(`[wake] "${worker.name}" interrupting wait`);
   if (loop) await cancelIfPending(ctx, loop._id);
-  await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
-  await scheduleLoopRun(ctx, worker, { delayMs });
+  await scheduleLoopRun(ctx, worker, { delayMs, lastWorkTs: now + delayMs });
 }
 
 // ── Scheduling the loop ────────────────────────────────────────────────────
@@ -188,12 +190,15 @@ export async function continueRunning(
   delayMs: number,
   opts?: { lastWorkTs?: number | undefined; cursor?: Value | undefined },
 ): Promise<void> {
+  let lastWorkTs = opts?.lastWorkTs;
   if (worker.status.kind !== "running") {
     await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
+    // Entering running starts a fresh cooldown window.
+    lastWorkTs = Math.max(lastWorkTs ?? 0, Date.now() + delayMs);
   }
   await scheduleLoopRun(ctx, worker, {
     delayMs,
-    lastWorkTs: opts?.lastWorkTs,
+    lastWorkTs,
     cursor: opts?.cursor,
   });
 }

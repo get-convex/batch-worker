@@ -15,6 +15,7 @@ import schema from "./schema.js";
 import { modules } from "./setup.test.js";
 import type { MutationCtx } from "./functions.js";
 import {
+  continueRunning,
   ensureMonitored,
   getWorker,
   getOrCreateWorkerState,
@@ -196,6 +197,50 @@ describe("worker component", () => {
     expect(after!.runnerId).not.toBe(before!.runnerId);
   });
 
+  test("waking from a wait refreshes the cooldown window", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.lib.ping, pingArgs());
+    await run(t, async (ctx) => {
+      const w = await getWorker(ctx, "");
+      assert(w);
+      await scheduleWaiting(ctx, w, 60_000);
+    });
+    vi.advanceTimersByTime(10_000);
+
+    await t.mutation(api.lib.ping, pingArgs());
+
+    // The woken run gets a full cooldown window, so a pool with no runnable
+    // work (e.g. saturated) can't bounce straight back to idle on every ping.
+    const state = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+    expect(state!.lastWorkTs).toBe(Date.now());
+  });
+
+  test("continueRunning from idle refreshes the cooldown window", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.lib.ping, pingArgs());
+    await run(t, async (ctx) => {
+      const w = await getWorker(ctx, "");
+      assert(w);
+      await scheduleWaiting(ctx, w, 60_000);
+    });
+    vi.advanceTimersByTime(60_000);
+
+    await run(t, async (ctx) => {
+      const w = await getWorker(ctx, "");
+      assert(w);
+      await continueRunning(ctx, w, 0);
+    });
+
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
+    expect(worker!.status.kind).toBe("running");
+    const state = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, worker!),
+    );
+    expect(state!.lastWorkTs).toBe(Date.now());
+  });
+
   test("ping is a no-op when the loop will run soon", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(api.lib.ping, pingArgs());
@@ -219,7 +264,7 @@ describe("worker component", () => {
     expect(after!.runnerId).toBe(before!.runnerId);
   });
 
-  test("ping is a no-op when the loop is scheduled within the debounce window", async () => {
+  test("ping keeps a loop scheduled within the debounce window but marks it running", async () => {
     const t = convexTest(schema, modules);
     const config = { debounceMs: 20 * RUNNING_THRESHOLD_MS };
     await t.mutation(api.lib.ping, pingArgs({ config }));
@@ -241,6 +286,17 @@ describe("worker component", () => {
     );
     expect(after!.generation).toBe(before!.generation);
     expect(after!.runnerId).toBe(before!.runnerId);
+    const worker = await run(t, (ctx) => getWorker(ctx, ""));
+    expect(worker!.status.kind).toBe("running");
+    // The kept run gets a fresh cooldown window from its scheduled time.
+    expect(after!.lastWorkTs).toBe(Date.now() + 10 * RUNNING_THRESHOLD_MS);
+
+    // Later pings now no-op on the status check alone.
+    await t.mutation(api.lib.ping, pingArgs({ config }));
+    const stateAfter = await run(t, async (ctx) =>
+      getOrCreateWorkerState(ctx, (await getWorker(ctx, ""))!),
+    );
+    expect(stateAfter!.runnerId).toBe(before!.runnerId);
   });
 
   test("monitor restarts a dead loop and keeps watching", async () => {
