@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- Enfoce a cooldown period whenever the worker starts running, even if the query
+  hasn't returned work for a while. Results in more idle loop iterations.
+- Transitions to "running" on ping even when already scheduled due to timeout.
+
 ## 0.3.2
 
 - Fix: Prefer a sooner timeoutMs over a ping's debounceMs when idle.
@@ -20,6 +26,11 @@
 - Introduces `defineBatchWorkerValidators`, deprecates vBatchQueryArgs,
   vBatchResult, etc.
 - Requires Convex 1.43+ for v.commitTs() and the new `ctx.runQuery` options.
+
+## 0.2.2 (patch on 0.2.1, not included in 0.3.0)
+
+- Enfoce a cooldown period whenever the worker starts running, even if the query
+  hasn't returned work for a while. Results in more idle loop iterations.
 
 ## 0.2.1 (patch on 0.2.0, not included in 0.3.0)
 

@@ -6,7 +6,7 @@
   "bugs": {
     "url": "https://github.com/get-convex/batch-worker/issues"
   },
-  "version": "0.3.2",
+  "version": "0.3.3",
   "license": "Apache-2.0",
   "keywords": [
     "convex",
