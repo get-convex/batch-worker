@@ -1,9 +1,9 @@
 # Changelog
 
-## 0.2.2-alpha.0
+## 0.2.2
 
 - Enfoce a cooldown period whenever the worker starts running, even if the query
-  hasn't returned work for a while.
+  hasn't returned work for a while. Results in more idle loop iterations.
 
 ## 0.2.1
 
