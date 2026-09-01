@@ -25,7 +25,7 @@ export default defineSchema({
     // Bumped each iteration & on every (re)start. A scheduled loop whose
     // generation no longer matches has been superseded and exits.
     generation: v.int64(),
-    // When the loop last saw work; drives the cooldown window.
+    // When the loop last saw work or entered the running state.
     lastWorkTs: v.number(),
     // The currently-scheduled loop invocation, checked by the monitor and
     // canceled when a ping interrupts a wait.

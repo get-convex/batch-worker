@@ -159,7 +159,7 @@ async function wake(ctx: MutationCtx, worker: Doc<"workers">): Promise<void> {
   // Possibly wait for a debounce window before running
   const delayMs = worker.config.debounceMs ?? DEFAULT_CONFIG.debounceMs;
   await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
-  await scheduleLoopRun(ctx, worker, { delayMs });
+  await scheduleLoopRun(ctx, worker, { delayMs, lastWorkTs: now + delayMs });
 }
 
 // ── Scheduling the loop ────────────────────────────────────────────────────
@@ -173,11 +173,10 @@ export async function continueRunning(
 ): Promise<void> {
   if (worker.status.kind !== "running") {
     await ctx.db.patch("workers", worker._id, { status: { kind: "running" } });
+    // Entering running starts a fresh cooldown window.
+    lastWorkTs = Math.max(lastWorkTs ?? 0, Date.now() + delayMs);
   }
-  await scheduleLoopRun(ctx, worker, {
-    delayMs,
-    lastWorkTs,
-  });
+  await scheduleLoopRun(ctx, worker, { delayMs, lastWorkTs });
 }
 
 /**
