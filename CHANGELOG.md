@@ -2,7 +2,7 @@
 
 ## 0.3.3
 
-- Enfoce a cooldown period whenever the worker starts running, even if the query
+- Enforce a cooldown period whenever the worker starts running, even if the query
   hasn't returned work for a while. Results in more idle loop iterations.
 - Transitions to "running" on ping even when already scheduled due to timeout.
 
