@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.4
+
+- Remove the unnecessary react peer dependency and entrypoint
+
 ## 0.3.3
 
 - Enforce a cooldown period whenever the worker starts running, even if the
