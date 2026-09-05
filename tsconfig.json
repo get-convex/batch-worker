@@ -6,7 +6,6 @@
 
     "target": "ESNext",
     "lib": ["ES2023", "dom", "DOM.Iterable"],
-    "jsx": "react-jsx",
     "forceConsistentCasingInFileNames": true,
     "allowSyntheticDefaultImports": true,
     "noErrorTruncation": true,
