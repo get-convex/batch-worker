@@ -31,6 +31,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      kick: FunctionReference<
+        "mutation",
+        "internal",
+        { name: string },
+        null,
+        Name
+      >;
       ping: FunctionReference<
         "mutation",
         "internal",
@@ -39,6 +46,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           name: string;
           workQuery: string;
           workerMutation: string;
+          workpool?: {
+            cancel: string;
+            enqueue: string;
+            logLevel?: "DEBUG" | "TRACE" | "INFO" | "REPORT" | "WARN" | "ERROR";
+            maxParallelism?: number;
+          };
         },
         null,
         Name
