@@ -11,6 +11,7 @@
 import type * as aggregates from "../aggregates.js";
 import type * as e2e from "../e2e.js";
 import type * as example from "../example.js";
+import type * as pooled from "../pooled.js";
 import type * as rateLimited from "../rateLimited.js";
 
 import type {
@@ -23,6 +24,7 @@ declare const fullApi: ApiFromModules<{
   aggregates: typeof aggregates;
   e2e: typeof e2e;
   example: typeof example;
+  pooled: typeof pooled;
   rateLimited: typeof rateLimited;
 }>;
 
@@ -54,6 +56,7 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   batchWorker: import("@convex-dev/batch-worker/_generated/component.js").ComponentApi<"batchWorker">;
+  workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"workpool">;
   rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
   staticHosting: import("@convex-dev/static-hosting/_generated/component.js").ComponentApi<"staticHosting">;
 };

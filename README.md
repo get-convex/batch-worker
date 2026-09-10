@@ -230,6 +230,69 @@ await ping(ctx, components.batchWorker, {
 });
 ```
 
+### Sharing a Workpool to limit parallelism
+
+Pass an optional `Workpool` instance to `ping` to limit concurrent batch
+mutations across named workers. Mount the pool alongside BatchWorker in your
+app's `convex.config.ts`:
+
+```ts
+import workpool from "@convex-dev/workpool/convex.config.js";
+
+app.use(workpool);
+```
+
+This requires Workpool's `onFailure` option, currently available in the
+[PR #231 build](https://github.com/get-convex/workpool/pull/231):
+
+```sh
+npm i https://pkg.pr.new/get-convex/workpool/@convex-dev/workpool@231
+```
+
+```ts
+import { Workpool } from "@convex-dev/workpool";
+import { ping } from "@convex-dev/batch-worker";
+
+const pool = new Workpool(components.workpool, { maxParallelism: 10 });
+
+// Inside the mutation that inserts work:
+await ping(ctx, components.batchWorker, {
+  name: `user:${userId}`,
+  workQuery: internal.jobs.getBatch,
+  workerMutation: internal.jobs.processBatch,
+  workpool: pool,
+});
+```
+
+Each pool task represents one loop iteration, carrying only the worker name
+and generation. It fetches its batch when capacity is available, so work added
+while waiting can join the batch. All workers using the same mounted pool
+share its capacity with any other jobs in that pool. Each named worker still
+processes batches serially. The limit covers the batch mutation, not actions
+it schedules separately; `status: running` also includes workers queued for
+capacity.
+
+Pass the pool consistently on every `ping`. Omitting it selects the scheduler.
+Changing pools moves the current continuation and preserves the cursor and
+debounce eligibility. `start` and `kick` reuse the stored pool. Only enqueue
+and cancel function handles and the pool's concurrency/logging options are
+stored; BatchWorker has no runtime dependency on Workpool.
+
+Pooled workers use `onFailure` instead of a monitor or status polling. A failed
+iteration retries after `config.monitorLagMs` (default 60 seconds, minimum 10
+seconds). Workpool's action retry options do not apply to these mutations.
+`stop` invalidates the current generation and requests cancellation, so even
+an admitted stale mutation cannot commit another batch after the stop commits.
+
+Canceling a job directly through the Workpool API does **not** invoke
+`onFailure`. Recover that worker manually:
+
+```ts
+await ctx.runMutation(components.batchWorker.lib.kick, { name: `user:${userId}` });
+```
+
+See [pooled.ts](./example/convex/pooled.ts) for a complete per-user queue example.
+
 ### The cursor
 
 The component stores the cursor for you: whatever your work query returns
@@ -420,7 +483,8 @@ Tips for rate-limiting LLM calls:
 ### Failure handling
 
 If your work query or worker mutation throws, the loop dies and the liveness
-monitor restarts it after ~`monitorLagMs`. The unprocessed rows are still in
+monitor (or Workpool's `onFailure` callback) restarts it after ~`monitorLagMs`.
+The unprocessed rows are still in
 your table and the cursor stayed where it was, so the query hands out the **same
 batch again**. That gives you at-least-once processing, but it also means one
 poison item that always throws can wedge the queue. For work that can fail per
