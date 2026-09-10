@@ -2,6 +2,14 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
+  executionBenchmarks: defineTable({
+    name: v.string(),
+    runId: v.string(),
+    mode: v.union(v.literal("busy"), v.literal("poll")),
+    startedAt: v.number(),
+    deadline: v.number(),
+    pollIntervalMs: v.number(),
+  }).index("name", ["name"]),
   // Independent per-user queues sharing one Workpool (see pooled.ts).
   userEvents: defineTable({
     user: v.string(),

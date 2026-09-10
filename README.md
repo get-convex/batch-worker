@@ -577,6 +577,25 @@ The demo is hosted on Convex itself via
 published to `https://<deployment>.convex.site`. See
 [example/README.md](./example/README.md#deploy) for the deploy commands.
 
+### Benchmarking execution cadence
+
+For a live comparison of scheduler and Workpool iteration/polling cadence,
+deploy the example to a development deployment and run:
+
+```sh
+npm run build
+npx convex dev --once
+node execution-benchmark.mjs --duration-ms 10000 --trials 3
+```
+
+The benchmark uses a dedicated pool and internal functions. It compares busy
+iterations and empty-queue polling at 0 and 200 ms, with pool capacities of 1
+and 10, and includes ten-worker throughput. Server execution logs provide the
+timings; instrumentation adds no per-iteration database writes. Results,
+raw logs, and a report go to `.context/execution-benchmark/`. For a shorter run,
+append `--pilot --duration-ms 3000 --trials 1`. Run one benchmark at a time:
+its worker names are reused between trials.
+
 ### How it works
 
 | Table         | Written by                          | Read by                 |
