@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.5
+
+- Improve the test entrypoint generics
+
 ## 0.3.4
 
 - Remove the unnecessary react peer dependency and entrypoint
