@@ -31,6 +31,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      kick: FunctionReference<
+        "mutation",
+        "internal",
+        { name: string },
+        null,
+        Name
+      >;
       ping: FunctionReference<
         "mutation",
         "internal",
