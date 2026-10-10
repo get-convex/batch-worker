@@ -2,23 +2,15 @@
 
 import { v } from "convex/values";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import {
-  anyApi,
-  type ApiFromModules,
-  defineSchema,
-  defineTable,
-  internalMutationGeneric,
-  internalQueryGeneric,
-  mutationGeneric,
-  queryGeneric,
-} from "convex/server";
+import { defineSchema, defineTable } from "convex/server";
+import { defineTestApp } from "convex-test";
+import componentTest from "../test.js";
 import {
   defineBatchWorkerValidators,
   ping,
   vBatchQueryArgs,
   vBatchResult,
 } from "./index.js";
-import { components, initConvexTest } from "./setup.test.js";
 
 const schema = defineSchema({
   items: defineTable({ value: v.number() }),
@@ -32,11 +24,18 @@ const schema = defineSchema({
   letterBatches: defineTable({ letters: v.array(v.string()) }),
 });
 
+const app = defineTestApp({
+  schema,
+  components: {
+    batchWorker: componentTest,
+  },
+});
+
 const WORKER = "items";
 const CURSOR_WORKER = "marks";
 const LETTER_WORKER = "letters";
 
-export const getBatch = internalQueryGeneric({
+const getBatch = app.internalQuery({
   args: vBatchQueryArgs,
   returns: vBatchResult(v.object({ ids: v.array(v.id("items")) })),
   handler: async (ctx) => {
@@ -52,7 +51,7 @@ export const getBatch = internalQueryGeneric({
   },
 });
 
-export const processBatch = internalMutationGeneric({
+const processBatch = app.internalMutation({
   args: { ids: v.array(v.id("items")) },
   handler: async (ctx, { ids }) => {
     for (const id of ids) {
@@ -61,38 +60,38 @@ export const processBatch = internalMutationGeneric({
   },
 });
 
-export const enqueue = mutationGeneric({
+const enqueue = app.mutation({
   args: { value: v.number() },
-  handler: async (ctx, { value }) => {
+  handler: async (ctx, { value }): Promise<void> => {
     await ctx.db.insert("items", { value });
-    await ping(ctx, components.batchWorker, {
+    await ping(ctx, app.components.batchWorker, {
       name: WORKER,
       config: { debounceMs: 0 },
-      workQuery: testApi.getBatch,
-      workerMutation: testApi.processBatch,
+      workQuery: internal.worker.getBatch,
+      workerMutation: internal.worker.processBatch,
     });
   },
 });
 
-export const status = queryGeneric({
+const status = app.query({
   args: {},
   handler: async (ctx) =>
-    ctx.runQuery(components.batchWorker.lib.status, { name: WORKER }),
+    ctx.runQuery(app.components.batchWorker.lib.status, { name: WORKER }),
 });
 
-export const startWorker = mutationGeneric({
+const startWorker = app.mutation({
   args: {},
   handler: async (ctx) =>
-    ctx.runMutation(components.batchWorker.lib.start, { name: WORKER }),
+    ctx.runMutation(app.components.batchWorker.lib.start, { name: WORKER }),
 });
 
-export const stopWorker = mutationGeneric({
+const stopWorker = app.mutation({
   args: {},
   handler: async (ctx) =>
-    ctx.runMutation(components.batchWorker.lib.stop, { name: WORKER }),
+    ctx.runMutation(app.components.batchWorker.lib.stop, { name: WORKER }),
 });
 
-export const remaining = queryGeneric({
+const remaining = app.query({
   args: {},
   handler: async (ctx) => (await ctx.db.query("items").take(1000)).length,
 });
@@ -101,13 +100,15 @@ export const remaining = queryGeneric({
 
 const BATCH = 2;
 
-export const getMarks = internalQueryGeneric({
+const getMarks = app.internalQuery({
   args: vBatchQueryArgs,
   returns: vBatchResult({ seqs: v.array(v.int64()) }),
   handler: async (ctx, { cursor }) => {
     const marks = await ctx.db
       .query("marks")
-      .withIndex("seq", (q) => q.gte("seq", cursor ?? 0n))
+      .withIndex("seq", (q) =>
+        q.gte("seq", (cursor as bigint | undefined) ?? 0n),
+      )
       .take(BATCH);
     if (marks.length === 0) {
       return { kind: "idle" as const, cooldownMs: 100, pollIntervalMs: 10 };
@@ -121,7 +122,7 @@ export const getMarks = internalQueryGeneric({
   },
 });
 
-export const processMarks = internalMutationGeneric({
+const processMarks = app.internalMutation({
   args: { seqs: v.array(v.int64()) },
   handler: async (ctx, { seqs }) => {
     await ctx.db.insert("batches", { seqs });
@@ -129,7 +130,7 @@ export const processMarks = internalMutationGeneric({
 });
 
 // Same query, but the mutation insists the batch only got halfway.
-export const processMarksPartially = internalMutationGeneric({
+const processMarksPartially = app.internalMutation({
   args: { seqs: v.array(v.int64()) },
   handler: async (ctx, { seqs }) => {
     await ctx.db.insert("batches", { seqs });
@@ -137,37 +138,39 @@ export const processMarksPartially = internalMutationGeneric({
   },
 });
 
-export const enqueueMark = mutationGeneric({
+const enqueueMark = app.mutation({
   args: { seq: v.int64(), partial: v.optional(v.boolean()) },
-  handler: async (ctx, { seq, partial }) => {
+  handler: async (ctx, { seq, partial }): Promise<void> => {
     await ctx.db.insert("marks", { seq });
-    await ping(ctx, components.batchWorker, {
+    await ping(ctx, app.components.batchWorker, {
       name: CURSOR_WORKER,
       config: { debounceMs: 0 },
-      workQuery: testApi.getMarks,
+      workQuery: internal.worker.getMarks,
       workerMutation: partial
-        ? testApi.processMarksPartially
-        : testApi.processMarks,
+        ? internal.worker.processMarksPartially
+        : internal.worker.processMarks,
     });
   },
 });
 
-export const markCursor = queryGeneric({
+const markCursor = app.query({
   args: {},
   handler: async (ctx) =>
-    ctx.runQuery(components.batchWorker.lib.getCursor, { name: CURSOR_WORKER }),
+    ctx.runQuery(app.components.batchWorker.lib.getCursor, {
+      name: CURSOR_WORKER,
+    }),
 });
 
-export const setMarkCursor = mutationGeneric({
+const setMarkCursor = app.mutation({
   args: { cursor: v.optional(v.int64()) },
   handler: async (ctx, { cursor }) =>
-    ctx.runMutation(components.batchWorker.lib.setCursor, {
+    ctx.runMutation(app.components.batchWorker.lib.setCursor, {
       name: CURSOR_WORKER,
       cursor,
     }),
 });
 
-export const batches = queryGeneric({
+const batches = app.query({
   args: {},
   handler: async (ctx) =>
     (await ctx.db.query("batches").take(1000)).map((b) => b.seqs),
@@ -175,32 +178,34 @@ export const batches = queryGeneric({
 
 // Seeding a cursor before the worker gets to process anything: `ping` creates
 // the worker, `stop` in the same mutation keeps its loop from running.
-export const seedMarks = mutationGeneric({
+const seedMarks = app.mutation({
   args: { seqs: v.array(v.int64()), cursor: v.int64() },
-  handler: async (ctx, { seqs, cursor }) => {
+  handler: async (ctx, { seqs, cursor }): Promise<void> => {
     for (const seq of seqs) {
       await ctx.db.insert("marks", { seq });
     }
-    await ping(ctx, components.batchWorker, {
+    await ping(ctx, app.components.batchWorker, {
       name: CURSOR_WORKER,
       config: { debounceMs: 0 },
-      workQuery: testApi.getMarks,
-      workerMutation: testApi.processMarks,
+      workQuery: internal.worker.getMarks,
+      workerMutation: internal.worker.processMarks,
     });
-    await ctx.runMutation(components.batchWorker.lib.stop, {
+    await ctx.runMutation(app.components.batchWorker.lib.stop, {
       name: CURSOR_WORKER,
     });
-    await ctx.runMutation(components.batchWorker.lib.setCursor, {
+    await ctx.runMutation(app.components.batchWorker.lib.setCursor, {
       name: CURSOR_WORKER,
       cursor,
     });
   },
 });
 
-export const startMarks = mutationGeneric({
+const startMarks = app.mutation({
   args: {},
   handler: async (ctx) =>
-    ctx.runMutation(components.batchWorker.lib.start, { name: CURSOR_WORKER }),
+    ctx.runMutation(app.components.batchWorker.lib.start, {
+      name: CURSOR_WORKER,
+    }),
 });
 
 // ── A worker whose cursor isn't a commit timestamp ──────────────────────────
@@ -210,7 +215,7 @@ const letterValidators = defineBatchWorkerValidators({
   cursor: v.string(),
 });
 
-export const getLetters = internalQueryGeneric({
+const getLetters = app.internalQuery({
   args: letterValidators.vQueryArgs,
   returns: letterValidators.vQueryReturns,
   handler: async (ctx, { cursor }) => {
@@ -229,7 +234,7 @@ export const getLetters = internalQueryGeneric({
   },
 });
 
-export const processLetters = internalMutationGeneric({
+const processLetters = app.internalMutation({
   args: letterValidators.vMutationArgs,
   returns: letterValidators.vMutationReturns,
   handler: async (ctx, { letters }) => {
@@ -238,58 +243,58 @@ export const processLetters = internalMutationGeneric({
   },
 });
 
-export const enqueueLetter = mutationGeneric({
+const enqueueLetter = app.mutation({
   args: { letter: v.string() },
-  handler: async (ctx, { letter }) => {
+  handler: async (ctx, { letter }): Promise<void> => {
     await ctx.db.insert("letters", { letter });
-    await ping(ctx, components.batchWorker, {
+    await ping(ctx, app.components.batchWorker, {
       name: LETTER_WORKER,
       config: { debounceMs: 0 },
-      workQuery: testApi.getLetters,
-      workerMutation: testApi.processLetters,
+      workQuery: internal.worker.getLetters,
+      workerMutation: internal.worker.processLetters,
     });
   },
 });
 
-export const letterCursor = queryGeneric({
+const letterCursor = app.query({
   args: {},
   handler: async (ctx) =>
-    ctx.runQuery(components.batchWorker.lib.getCursor, { name: LETTER_WORKER }),
+    ctx.runQuery(app.components.batchWorker.lib.getCursor, {
+      name: LETTER_WORKER,
+    }),
 });
 
-export const letterBatches = queryGeneric({
+const letterBatches = app.query({
   args: {},
   handler: async (ctx) =>
     (await ctx.db.query("letterBatches").take(1000)).map((b) => b.letters),
 });
 
-const testApi = (
-  anyApi as unknown as ApiFromModules<{
-    "index.test": {
-      getBatch: typeof getBatch;
-      processBatch: typeof processBatch;
-      enqueue: typeof enqueue;
-      status: typeof status;
-      startWorker: typeof startWorker;
-      stopWorker: typeof stopWorker;
-      remaining: typeof remaining;
-      getMarks: typeof getMarks;
-      processMarks: typeof processMarks;
-      processMarksPartially: typeof processMarksPartially;
-      enqueueMark: typeof enqueueMark;
-      markCursor: typeof markCursor;
-      setMarkCursor: typeof setMarkCursor;
-      batches: typeof batches;
-      seedMarks: typeof seedMarks;
-      startMarks: typeof startMarks;
-      getLetters: typeof getLetters;
-      processLetters: typeof processLetters;
-      enqueueLetter: typeof enqueueLetter;
-      letterCursor: typeof letterCursor;
-      letterBatches: typeof letterBatches;
-    };
-  }>
-)["index.test"];
+const { api, internal, createTest } = app.defineModules({
+  worker: {
+    getBatch,
+    processBatch,
+    enqueue,
+    status,
+    startWorker,
+    stopWorker,
+    remaining,
+    getMarks,
+    processMarks,
+    processMarksPartially,
+    enqueueMark,
+    markCursor,
+    setMarkCursor,
+    batches,
+    seedMarks,
+    startMarks,
+    getLetters,
+    processLetters,
+    enqueueLetter,
+    letterCursor,
+    letterBatches,
+  },
+});
 
 describe("Worker client", () => {
   beforeEach(() => {
@@ -300,28 +305,28 @@ describe("Worker client", () => {
   });
 
   test("ping drives the loop and processes work", async () => {
-    const t = initConvexTest(schema);
-    await t.mutation(testApi.enqueue, { value: 1 });
-    await t.mutation(testApi.enqueue, { value: 2 });
+    const t = createTest();
+    await t.mutation(api.worker.enqueue, { value: 1 });
+    await t.mutation(api.worker.enqueue, { value: 2 });
 
-    expect((await t.query(testApi.status, {}))?.kind).toBe("running");
+    expect((await t.query(api.worker.status, {}))?.kind).toBe("running");
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    expect(await t.query(testApi.remaining, {})).toBe(0);
-    expect((await t.query(testApi.status, {}))?.kind).toBe("idle");
+    expect(await t.query(api.worker.remaining, {})).toBe(0);
+    expect((await t.query(api.worker.status, {}))?.kind).toBe("idle");
   });
 
   test("stop halts the worker; start resumes it", async () => {
-    const t = initConvexTest(schema);
-    await t.mutation(testApi.enqueue, { value: 1 });
-    await t.mutation(testApi.stopWorker, {});
-    expect((await t.query(testApi.status, {}))?.kind).toBe("stopped");
+    const t = createTest();
+    await t.mutation(api.worker.enqueue, { value: 1 });
+    await t.mutation(api.worker.stopWorker, {});
+    expect((await t.query(api.worker.status, {}))?.kind).toBe("stopped");
 
-    await t.mutation(testApi.startWorker, {});
-    expect((await t.query(testApi.status, {}))?.kind).toBe("running");
+    await t.mutation(api.worker.startWorker, {});
+    expect((await t.query(api.worker.status, {}))?.kind).toBe("running");
     await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await t.query(testApi.remaining, {})).toBe(0);
+    expect(await t.query(api.worker.remaining, {})).toBe(0);
   });
 });
 
@@ -334,75 +339,78 @@ describe("Cursor", () => {
   });
 
   test("round-trips from the query back into the next call's args", async () => {
-    const t = initConvexTest(schema);
+    const t = createTest();
     for (const seq of [0n, 1n, 2n, 3n]) {
-      await t.mutation(testApi.enqueueMark, { seq });
+      await t.mutation(api.worker.enqueueMark, { seq });
     }
     // Nothing deletes the marks, so the query only stops handing out the same
     // batch once the cursor comes back to it as `args.cursor`.
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    expect(await t.query(testApi.batches, {})).toEqual([
+    expect(await t.query(api.worker.batches, {})).toEqual([
       [0n, 1n],
       [2n, 3n],
     ]);
-    expect(await t.query(testApi.markCursor, {})).toBe(4n);
+    expect(await t.query(api.worker.markCursor, {})).toBe(4n);
   });
 
   test("a cursor from the mutation overrides the query's", async () => {
-    const t = initConvexTest(schema);
+    const t = createTest();
     for (const seq of [0n, 1n]) {
-      await t.mutation(testApi.enqueueMark, { seq, partial: true });
+      await t.mutation(api.worker.enqueueMark, { seq, partial: true });
     }
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     // The query proposed 2n each time; the mutation only claimed the first
     // mark of each batch, so the loop re-reads from there and inches forward.
-    expect(await t.query(testApi.batches, {})).toEqual([[0n, 1n], [1n]]);
-    expect(await t.query(testApi.markCursor, {})).toBe(2n);
+    expect(await t.query(api.worker.batches, {})).toEqual([[0n, 1n], [1n]]);
+    expect(await t.query(api.worker.markCursor, {})).toBe(2n);
   });
 
   test("setCursor overwrites it, and clears it when omitted", async () => {
-    const t = initConvexTest(schema);
-    await t.mutation(testApi.enqueueMark, { seq: 0n });
+    const t = createTest();
+    await t.mutation(api.worker.enqueueMark, { seq: 0n });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await t.query(testApi.markCursor, {})).toBe(1n);
+    expect(await t.query(api.worker.markCursor, {})).toBe(1n);
 
-    await t.mutation(testApi.setMarkCursor, { cursor: 99n });
-    expect(await t.query(testApi.markCursor, {})).toBe(99n);
+    await t.mutation(api.worker.setMarkCursor, { cursor: 99n });
+    expect(await t.query(api.worker.markCursor, {})).toBe(99n);
 
-    await t.mutation(testApi.setMarkCursor, {});
-    expect(await t.query(testApi.markCursor, {})).toBe(null);
+    await t.mutation(api.worker.setMarkCursor, {});
+    expect(await t.query(api.worker.markCursor, {})).toBe(null);
   });
 
   test("can be seeded before the worker processes anything", async () => {
-    const t = initConvexTest(schema);
-    await t.mutation(testApi.seedMarks, { seqs: [0n, 1n, 2n, 3n], cursor: 2n });
+    const t = createTest();
+    await t.mutation(api.worker.seedMarks, {
+      seqs: [0n, 1n, 2n, 3n],
+      cursor: 2n,
+    });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await t.query(testApi.batches, {})).toEqual([]);
+    expect(await t.query(api.worker.batches, {})).toEqual([]);
 
     // A ping doesn't resume a stopped worker, so the cursor stays seeded.
-    await t.mutation(testApi.enqueueMark, { seq: 4n });
+    await t.mutation(api.worker.enqueueMark, { seq: 4n });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await t.query(testApi.batches, {})).toEqual([]);
+    expect(await t.query(api.worker.batches, {})).toEqual([]);
 
     // `start` is what resumes it, and the scan begins at the seeded cursor.
-    await t.mutation(testApi.startMarks, {});
+    await t.mutation(api.worker.startMarks, {});
     await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await t.query(testApi.batches, {})).toEqual([[2n, 3n], [4n]]);
+    expect(await t.query(api.worker.batches, {})).toEqual([[2n, 3n], [4n]]);
   });
 
   test("can be a type other than a commit timestamp", async () => {
-    const t = initConvexTest(schema);
+    const t = createTest();
     for (const letter of ["a", "b", "c"]) {
-      await t.mutation(testApi.enqueueLetter, { letter });
+      await t.mutation(api.worker.enqueueLetter, { letter });
     }
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    expect(await t.query(testApi.letterBatches, {})).toEqual([
+    expect(await t.query(api.worker.letterBatches, {})).toEqual([
       ["a", "b"],
       ["c"],
     ]);
-    expect(await t.query(testApi.letterCursor, {})).toBe("c");
+    expect(await t.query(api.worker.letterCursor, {})).toBe("c");
   });
 });
